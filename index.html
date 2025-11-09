@@ -61,8 +61,16 @@
       <div class="noscript">This app requires JavaScript for uploads and previews.</div>
     </noscript>
 
+    <div id="image-modal" class="modal-overlay" style="display: none;">
+      <div class="modal-content">
+        <button id="modal-close-btn" class="modal-close" aria-label="Close modal">&times;</button>
+        <img id="modal-img" src="" alt="Image preview" />
+        <div class="modal-link-container">
+          <input id="modal-link-input" type="text" readonly />
+          <button id="modal-copy-btn" class="button copy-btn">Copy</button>
+        </div>
+      </div>
+    </div>
     <script src="/script.js" defer></script>
   </body>
-  </html>
-
-
+</html>
