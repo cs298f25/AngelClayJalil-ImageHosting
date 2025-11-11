@@ -267,7 +267,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   modalCopyBtn.addEventListener('click', (e) => {
     e.target.textContent = 'Copied!';
-    navigator.clipboard.writeText(modalLinkInput.value);
+    
+    // --- Fallback for insecure http:// ---
+    modalLinkInput.focus();
+    modalLinkInput.select();
+    try {
+      // This is the old, but reliable, copy command
+      document.execCommand('copy');
+    } catch (err) {
+      console.error('Fallback: Oops, unable to copy', err);
+    }
+    // --- End of fallback ---
+
     setTimeout(() => {
       e.target.textContent = 'Copy';
     }, 2000);
