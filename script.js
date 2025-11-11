@@ -5,27 +5,22 @@
 
 const API_KEY_STORAGE = 'imagehost_api_key';
 let filesToUpload = [];
+let currentModalImage = null; // NEW: Track the currently open image
 
 // Helper to make API calls
 async function apiFetch(endpoint, options = {}) {
   const headers = {
     'X-API-Key': localStorage.getItem(API_KEY_STORAGE) || '',
   };
-
   const isFormData = options.body instanceof FormData;
-
   if (!isFormData) {
     headers['Content-Type'] = 'application/json';
   }
-
   options.headers = { ...headers, ...options.headers };
-
   if (!isFormData && options.body) {
     options.body = JSON.stringify(options.body);
   }
-
   const response = await fetch(endpoint, options);
-  
   if (!response.ok) {
     let errorMessage;
     try {
@@ -36,13 +31,11 @@ async function apiFetch(endpoint, options = {}) {
     }
     throw new Error(errorMessage);
   }
-  
   const text = await response.text();
   return text ? JSON.parse(text) : {};
 }
 
 // 1. Get or create a dev API key on load
-// ... (This function is unchanged) ...
 async function initApiKey() {
   let key = localStorage.getItem(API_KEY_STORAGE);
   if (key) {
@@ -66,8 +59,7 @@ async function initApiKey() {
   }
 }
 
-// 2. Handle file selection (drag & drop, file input)
-// ... (This function is unchanged) ...
+// 2. Handle file selection
 function setupFileHandling(dropzone, fileInput, uploadBtn) {
   let fileList = [];
   function updateFileList(newFiles) {
@@ -101,62 +93,37 @@ async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl) {
   progressBarEl.parentElement.classList.add('active');
   resultsEl.hidden = true;
   linksListEl.innerHTML = '';
-
   const totalFiles = filesToUpload.length;
   let filesUploaded = 0;
-
   for (const file of filesToUpload) {
     try {
-      // Step A: Ask our backend for a presigned S3 URL
       const { presigned_url, iid, key } = await apiFetch('/api/v1/upload/request', {
         method: 'POST',
-        body: {
-          filename: file.name,
-          mime_type: file.type,
-        },
+        body: { filename: file.name, mime_type: file.type },
       });
-
-      // --- (MODIFIED) ---
-      // We upload to S3 without the 'x-amz-acl' header.
       const s3Response = await fetch(presigned_url, {
         method: 'PUT',
         body: file,
-        headers: {
-          'Content-Type': file.type,
-        },
+        headers: { 'Content-Type': file.type },
       });
-
       if (!s3Response.ok) {
         throw new Error('S3 upload failed');
       }
-
-      // Step C: Tell our backend the upload is complete
       const { url } = await apiFetch('/api/v1/upload/complete', {
         method: 'POST',
-        body: {
-          iid: iid,
-          key: key,
-          filename: file.name,
-          mime_type: file.type,
-        },
+        body: { iid, key, filename: file.name, mime_type: file.type },
       });
-
-      // (MODIFIED) The 'url' we get back is now our app's URL
-      // e.g., /api/v1/image/img_...
       addLinkToResults(url, linksListEl);
       filesUploaded++;
       progressBarEl.style.width = `${(filesUploaded / totalFiles) * 100}%`;
-
     } catch (error) {
       console.error('Failed to upload file:', file.name, error);
     }
   }
-
   uploadBtn.disabled = false;
   resultsEl.hidden = false;
   filesToUpload = [];
   console.log('All uploads complete');
-  
   setTimeout(() => {
     document.getElementById('refresh-gallery').click();
   }, 200);
@@ -168,19 +135,14 @@ async function refreshGallery(gridEl) {
   try {
     const { items } = await apiFetch('/api/v1/me/images');
     gridEl.innerHTML = '';
-
     if (!items || items.length === 0) {
       gridEl.innerHTML = '<p class="grid-item-placeholder">No images uploaded yet.</p>';
       return;
     }
-
     items.forEach((item) => {
       const el = document.createElement('div');
       el.className = 'grid-item';
-      
-      // (MODIFIED) The URL is now our app's URL, not S3
       el.innerHTML = `<img src="${item.url}" alt="${item.filename}" loading="lazy">`;
-      
       el.addEventListener('click', () => showImageModal(item));
       gridEl.appendChild(el);
     });
@@ -194,20 +156,24 @@ async function refreshGallery(gridEl) {
 function addLinkToResults(url, listEl) {
   const item = document.createElement('li');
   item.className = 'link-item';
-  
-  // (MODIFIED) The URL in the box is now our app's URL
-  // We use window.location.origin to build the full link
   const fullUrl = `${window.location.origin}${url}`;
-  
   item.innerHTML = `
     <input class="link-url" type="text" value="${fullUrl}" readonly>
     <button class="button copy-btn">Copy</button>
   `;
   item.querySelector('.copy-btn').addEventListener('click', (e) => {
-    e.target.textContent = 'Copied!';
-    navigator.clipboard.writeText(fullUrl);
+    const button = e.target;
+    const input = item.querySelector('.link-url');
+    button.textContent = 'Copied!';
+    input.focus();
+    input.select();
+    try {
+      document.execCommand('copy');
+    } catch (err) {
+      console.error('Fallback: Oops, unable to copy', err);
+    }
     setTimeout(() => {
-      e.target.textContent = 'Copy';
+      button.textContent = 'Copy';
     }, 2000);
   });
   listEl.prepend(item);
@@ -218,8 +184,9 @@ function showImageModal(item) {
   const modal = document.getElementById('image-modal');
   const modalImg = document.getElementById('modal-img');
   const modalLinkInput = document.getElementById('modal-link-input');
-
-  // (MODIFIED) Set the src and link to our app's URL
+  
+  currentModalImage = item; // NEW: Set the current image
+  
   modalImg.src = item.url;
   modalImg.alt = item.filename;
   modalLinkInput.value = `${window.location.origin}${item.url}`;
@@ -227,9 +194,44 @@ function showImageModal(item) {
   modal.style.display = 'flex';
 }
 
+// --- NEW: Function to handle deleting an image ---
+async function handleDeleteImage() {
+  if (!currentModalImage) return; // Safety check
+  
+  const iid = currentModalImage.id;
+  const filename = currentModalImage.filename;
+
+  // Show a confirmation dialog
+  if (!confirm(`Are you sure you want to delete this image: ${filename}?`)) {
+    return;
+  }
+  
+  try {
+    // Call the new DELETE endpoint
+    await apiFetch(`/api/v1/image/${iid}`, {
+      method: 'DELETE',
+    });
+    
+    // Success! Close the modal and refresh the gallery
+    closeModal(); // Call the close function
+    document.getElementById('refresh-gallery').click(); // Refresh gallery
+    
+  } catch (error) {
+    console.error('Failed to delete image:', error);
+    alert(`Error: ${error.message}`);
+  }
+}
+
+// --- NEW: Renamed function so we can call it ---
+function closeModal() {
+  const modal = document.getElementById('image-modal');
+  modal.style.display = 'none';
+  currentModalImage = null; // NEW: Clear the current image
+}
+
 // --- Main execution ---
-// ... (This function is unchanged) ...
 document.addEventListener('DOMContentLoaded', () => {
+  // Get all DOM elements
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
   const uploadBtn = document.getElementById('upload-btn');
@@ -242,22 +244,21 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalCloseBtn = document.getElementById('modal-close-btn');
   const modalCopyBtn = document.getElementById('modal-copy-btn');
   const modalLinkInput = document.getElementById('modal-link-input');
+  const modalDeleteBtn = document.getElementById('modal-delete-btn'); // NEW: Get delete button
 
   if (!dropzone) {
     console.error('Fatal: UI elements not found!');
     return;
   }
 
+  // Set up all event listeners
   setupFileHandling(dropzone, fileInput, uploadBtn);
   uploadBtn.addEventListener('click', () =>
     handleUpload(uploadBtn, progressBar, uploadResults, linksList)
   );
   refreshBtn.addEventListener('click', () => refreshGallery(galleryGrid));
 
-  function closeModal() {
-    modal.style.display = 'none';
-  }
-
+  // Add Modal event listeners
   modalCloseBtn.addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => {
     if (e.target === modal) {
@@ -267,23 +268,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   modalCopyBtn.addEventListener('click', (e) => {
     e.target.textContent = 'Copied!';
-    
-    // --- Fallback for insecure http:// ---
     modalLinkInput.focus();
     modalLinkInput.select();
     try {
-      // This is the old, but reliable, copy command
       document.execCommand('copy');
     } catch (err) {
       console.error('Fallback: Oops, unable to copy', err);
     }
-    // --- End of fallback ---
-
     setTimeout(() => {
       e.target.textContent = 'Copy';
     }, 2000);
   });
+  
+  // NEW: Add delete button event listener
+  modalDeleteBtn.addEventListener('click', handleDeleteImage);
 
+  // Init API key and load initial gallery
   initApiKey().then(() => {
     refreshGallery(galleryGrid);
   });

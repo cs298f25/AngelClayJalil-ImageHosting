@@ -38,14 +38,10 @@ def k_user(uid): return f"user:{uid}"
 def k_user_images(uid): return f"user:{uid}:images"
 def k_img(iid): return f"img:{iid}"
 
-# --- (MODIFIED) This helper is no longer used to build public URLs ---
-# We will generate presigned GET URLs instead.
 def get_s3_url(key):
-    # This is just a reference, not a working public URL
     return f"s3://{AWS_S3_BUCKET_NAME}/{key}"
 
 # --- Static file routes (HTML, CSS, JS) ---
-# ... (These are all unchanged) ...
 @app.get("/")
 def serve_index():
     root = os.path.dirname(os.path.abspath(__file__))
@@ -72,8 +68,7 @@ def redis_check():
     except Exception as e:
         return err("redis_unreachable", str(e), 500)
 
-# --- Auth Routes (Unchanged) ---
-# ... (require_api_key and issue_key are unchanged) ...
+# --- Auth Routes ---
 def require_api_key():
     token = (request.headers.get("X-API-Key") or "").strip()
     if not token:
@@ -85,8 +80,8 @@ def require_api_key():
 
 @app.post("/api/v1/dev/issue-key")
 def issue_key():
-    username = (request.json or {}).get("username", "demo").strip() or "demo"
-    uid = f"u_{username}"
+    username = f"user_{uuid.uuid4().hex[:8]}"
+    uid = f"u_{username}" 
     r.hsetnx(k_user(uid), "username", username)
     r.hset(k_user(uid), mapping={"uid": uid, "created_at": now()})
     token = signer.dumps({"uid": uid})
@@ -112,9 +107,6 @@ def request_upload():
     key = f"uploads/{uid}/{iid}/{filename}"
 
     try:
-        # --- (MODIFIED) ---
-        # We no longer ask for "ACL": "public-read".
-        # The file will be uploaded as private.
         presigned_url = s3.generate_presigned_url(
             "put_object",
             Params={
@@ -149,24 +141,22 @@ def complete_upload():
     if not all([iid, key, filename, mime_type]):
         return err("validation", "iid, key, filename, and mime_type are required", 400)
 
-    # The URL saved here is just a reference, not a public link
     img_url_ref = get_s3_url(key)
     pipe = r.pipeline()
     pipe.hset(k_img(iid), mapping={
         "id": iid,
         "owner_uid": uid,
-        "key": key, # This is the important part
-        "url": img_url_ref, # Just a reference
+        "key": key, 
+        "url": img_url_ref, 
         "filename": filename,
         "mime": mime_type,
-        "private": 1, # Mark as private
+        "private": 1, 
         "created_at": now(),
         "views": 0
     })
     pipe.zadd(k_user_images(uid), {iid: now()})
     pipe.execute()
 
-    # Return the *image ID*, not a direct URL
     return ok({"id": iid, "url": f"/api/v1/image/{iid}"}, 201)
 
 # --- Gallery Endpoints ---
@@ -188,23 +178,13 @@ def me_images():
     
     for data in results:
         if data:
-            # (MODIFIED) We send our *own* app's URL, not the S3 URL
             data['url'] = f"/api/v1/image/{data['id']}"
             items.append(data)
             
     return ok({"items": items})
 
-# --- (NEW) Image Serving Route ---
 @app.get("/api/v1/image/<iid>")
 def get_image(iid):
-    """
-    Serves a private S3 file by generating a temporary
-    presigned GET URL and redirecting the user to it.
-    """
-    # We don't require an API key here, so links can be shared
-    # (but they will only work for 1 hour)
-    
-    # 1. Get the S3 key from Redis
     img_data = r.hgetall(k_img(iid))
     if not img_data:
         return err("not_found", "Image not found", 404)
@@ -214,7 +194,6 @@ def get_image(iid):
         return err("invalid_record", "Image record is corrupt", 500)
 
     try:
-        # 2. Generate a temporary (1 hour) URL to *read* the object
         view_url = s3.generate_presigned_url(
             "get_object",
             Params={
@@ -223,13 +202,52 @@ def get_image(iid):
             },
             ExpiresIn=3600
         )
-        # 3. Redirect the browser to that temporary URL
         return redirect(view_url, code=302)
         
     except ClientError as e:
         print(f"S3 GET Error: {e}")
         return err("s3_error", "Could not get image URL", 500)
 
+# --- NEW: Delete Image Endpoint ---
+
+@app.delete("/api/v1/image/<iid>")
+def delete_image(iid):
+    # 1. Check if user is authenticated
+    auth = require_api_key()
+    if not auth:
+        return err("auth", "invalid api key", 401)
+    
+    uid = auth["uid"]
+    
+    # 2. Get image data from Redis
+    img_data = r.hgetall(k_img(iid))
+    if not img_data:
+        return err("not_found", "Image not found", 404)
+        
+    # 3. Check if this user owns the image
+    if img_data.get("owner_uid") != uid:
+        return err("auth", "You do not have permission to delete this image", 403)
+        
+    s3_key = img_data.get("key")
+    if not s3_key:
+        return err("invalid_record", "Image record is corrupt", 500)
+
+    try:
+        # 4. Delete the object from S3
+        s3.delete_object(Bucket=AWS_S3_BUCKET_NAME, Key=s3_key)
+        
+        # 5. Delete the data from Redis
+        pipe = r.pipeline()
+        pipe.delete(k_img(iid))
+        pipe.zrem(k_user_images(uid), iid)
+        pipe.execute()
+        
+        return ok({"status": "deleted", "id": iid})
+        
+    except ClientError as e:
+        print(f"S3 DELETE Error: {e}")
+        # If S3 fails, we don't delete from Redis
+        return err("s3_error", "Could not delete image from S3", 500)
 
 # --- Run the app ---
 if __name__ == "__main__":
