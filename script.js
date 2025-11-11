@@ -125,8 +125,7 @@ async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl) {
         method: 'PUT',
         body: file,
         headers: {
-          'Content-Type': file.type,
-          'x-amz-acl': 'public-read', // Match ACL from backend
+          'Content-Type': file.type
         },
       });
 
