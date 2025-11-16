@@ -1,8 +1,7 @@
 flask
 redis
-redis6
 boto3
 python-dotenv
 uuid
-os
-time
+pytest
+pytest-mock

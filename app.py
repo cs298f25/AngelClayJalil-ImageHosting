@@ -3,12 +3,12 @@ import os, time, uuid, redis, boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, send_from_directory, url_for, redirect
+from flask import Flask, jsonify, request, render_template, url_for, redirect
 from itsdangerous import URLSafeSerializer
 
 # --- Setup ---
 load_dotenv()
-app = Flask(__name__)
+app = Flask(__name__, template_folder="template", static_folder="static")
 
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET", "dev-secret")
 signer = URLSafeSerializer(app.config["SECRET_KEY"], salt="api-key")
@@ -41,21 +41,10 @@ def k_img(iid): return f"img:{iid}"
 def get_s3_url(key):
     return f"s3://{AWS_S3_BUCKET_NAME}/{key}"
 
-# --- Static file routes (HTML, CSS, JS) ---
+# --- Frontend Route ---
 @app.get("/")
 def serve_index():
-    root = os.path.dirname(os.path.abspath(__file__))
-    return send_from_directory(root, "index.html")
-
-@app.get("/script.js")
-def serve_script():
-    root = os.path.dirname(os.path.abspath(__file__))
-    return send_from_directory(root, "script.js")
-
-@app.get("/style.css")
-def serve_style():
-    root = os.path.dirname(os.path.abspath(__file__))
-    return send_from_directory(root, "style.css")
+    return render_template("index.html")
 
 @app.get("/health")
 def health_check():
