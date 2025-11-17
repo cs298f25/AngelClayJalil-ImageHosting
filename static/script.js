@@ -125,7 +125,10 @@ async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl) {
       const s3Response = await fetch(presigned_url, {
         method: 'PUT',
         body: file,
-        headers: { 'Content-Type': file.type },
+        headers: {
+          'Content-Type': file.type,
+          'x-amz-acl': 'public-read',
+        },
       });
       if (!s3Response.ok) {
         throw new Error('S3 upload failed');
