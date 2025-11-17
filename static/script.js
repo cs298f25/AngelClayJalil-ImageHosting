@@ -8,19 +8,30 @@ let filesToUpload = [];
 let currentModalImage = null; // NEW: Track the currently open image
 
 // Helper to make API calls
-async function apiFetch(endpoint, options = {}) {
+async function apiFetch(endpoint, options = {}, attempt = 0) {
+  const requestOptions = { ...options };
   const headers = {
     'X-API-Key': localStorage.getItem(API_KEY_STORAGE) || '',
+    ...(requestOptions.headers || {}),
   };
-  const isFormData = options.body instanceof FormData;
+  const isFormData = requestOptions.body instanceof FormData;
   if (!isFormData) {
     headers['Content-Type'] = 'application/json';
   }
-  options.headers = { ...headers, ...options.headers };
-  if (!isFormData && options.body) {
-    options.body = JSON.stringify(options.body);
+  requestOptions.headers = headers;
+  if (!isFormData && requestOptions.body) {
+    requestOptions.body = JSON.stringify(requestOptions.body);
   }
-  const response = await fetch(endpoint, options);
+
+  const response = await fetch(endpoint, requestOptions);
+
+  if (response.status === 401 && attempt === 0) {
+    console.warn('API key rejected, getting a new one...');
+    localStorage.removeItem(API_KEY_STORAGE);
+    await initApiKey({ force: true });
+    return apiFetch(endpoint, options, attempt + 1);
+  }
+
   if (!response.ok) {
     let errorMessage;
     try {
@@ -36,12 +47,17 @@ async function apiFetch(endpoint, options = {}) {
 }
 
 // 1. Get or create a dev API key on load
-async function initApiKey() {
+async function initApiKey({ force = false } = {}) {
   let key = localStorage.getItem(API_KEY_STORAGE);
-  if (key) {
+  if (key && !force) {
     console.log('Using existing API key');
     return key;
   }
+
+  if (force && key) {
+    localStorage.removeItem(API_KEY_STORAGE);
+  }
+
   console.log('No API key found, issuing a new one...');
   try {
     const data = await apiFetch('/api/v1/dev/issue-key', {

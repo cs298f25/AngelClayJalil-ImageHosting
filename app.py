@@ -1,10 +1,11 @@
 from __future__ import annotations
-import os, time, uuid, redis, boto3
-from botocore.config import Config
-from botocore.exceptions import ClientError
+import os
+import time
+import uuid
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, render_template, url_for, redirect
 from itsdangerous import URLSafeSerializer
+from storage import redis_client, s3_client
 
 # --- Setup ---
 load_dotenv()
@@ -13,33 +14,10 @@ app = Flask(__name__, template_folder="template", static_folder="static")
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET", "dev-secret")
 signer = URLSafeSerializer(app.config["SECRET_KEY"], salt="api-key")
 
-# Redis
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-r = redis.from_url(REDIS_URL, decode_responses=True)
-
-# --- S3 Setup ---
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-AWS_S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME")
-
-if not AWS_S3_BUCKET_NAME:
-    print("Error: AWS_S3_BUCKET_NAME environment variable not set.")
-    
-s3 = boto3.client(
-    "s3",
-    region_name=AWS_REGION,
-    config=Config(signature_version="s3v4"),
-)
-
 # --- Helper functions ---
 def now(): return int(time.time())
 def ok(payload, status=200): return jsonify(payload), status
 def err(code, message, status): return jsonify({"error": {"code": code, "message": message}}), status
-def k_user(uid): return f"user:{uid}"
-def k_user_images(uid): return f"user:{uid}:images"
-def k_img(iid): return f"img:{iid}"
-
-def get_s3_url(key):
-    return f"s3://{AWS_S3_BUCKET_NAME}/{key}"
 
 # --- Frontend Route ---
 @app.get("/")
@@ -53,7 +31,7 @@ def health_check():
 @app.get("/redis-check")
 def redis_check():
     try:
-        return ok({"redis": bool(r.ping())})
+        return ok({"redis": bool(redis_client.ping_redis())})
     except Exception as e:
         return err("redis_unreachable", str(e), 500)
 
@@ -70,9 +48,8 @@ def require_api_key():
 @app.post("/api/v1/dev/issue-key")
 def issue_key():
     username = f"user_{uuid.uuid4().hex[:8]}"
-    uid = f"u_{username}" 
-    r.hsetnx(k_user(uid), "username", username)
-    r.hset(k_user(uid), mapping={"uid": uid, "created_at": now()})
+    uid = f"u_{username}"
+    redis_client.create_user(uid, username, now())
     token = signer.dumps({"uid": uid})
     return ok({"api_key": token, "uid": uid})
 
@@ -96,21 +73,13 @@ def request_upload():
     key = f"uploads/{uid}/{iid}/{filename}"
 
     try:
-        presigned_url = s3.generate_presigned_url(
-            "put_object",
-            Params={
-                "Bucket": AWS_S3_BUCKET_NAME,
-                "Key": key,
-                "ContentType": mime_type,
-            },
-            ExpiresIn=3600,
-        )
+        presigned_url = s3_client.generate_presigned_upload_url(key, mime_type)
         return ok({
             "iid": iid,
             "key": key,
             "presigned_url": presigned_url,
         })
-    except ClientError as e:
+    except Exception as e:
         print(f"S3 Error: {e}")
         return err("s3_error", "Could not generate S3 upload URL.", 500)
 
@@ -130,21 +99,8 @@ def complete_upload():
     if not all([iid, key, filename, mime_type]):
         return err("validation", "iid, key, filename, and mime_type are required", 400)
 
-    img_url_ref = get_s3_url(key)
-    pipe = r.pipeline()
-    pipe.hset(k_img(iid), mapping={
-        "id": iid,
-        "owner_uid": uid,
-        "key": key, 
-        "url": img_url_ref, 
-        "filename": filename,
-        "mime": mime_type,
-        "private": 1, 
-        "created_at": now(),
-        "views": 0
-    })
-    pipe.zadd(k_user_images(uid), {iid: now()})
-    pipe.execute()
+    img_url_ref = s3_client.get_s3_url(key)
+    redis_client.store_image(iid, uid, key, img_url_ref, filename, mime_type, now())
 
     return ok({"id": iid, "url": f"/api/v1/image/{iid}"}, 201)
 
@@ -157,14 +113,10 @@ def me_images():
         return err("auth", "invalid api key", 401)
     
     uid = auth["uid"]
-    iids = r.zrevrange(k_user_images(uid), 0, 49)
+    iids = redis_client.get_user_images(uid, limit=50)
+    results = redis_client.get_images_batch(iids)
+    
     items = []
-    
-    pipe = r.pipeline()
-    for iid in iids:
-        pipe.hgetall(k_img(iid))
-    results = pipe.execute()
-    
     for data in results:
         if data:
             data['url'] = f"/api/v1/image/{data['id']}"
@@ -174,7 +126,7 @@ def me_images():
 
 @app.get("/api/v1/image/<iid>")
 def get_image(iid):
-    img_data = r.hgetall(k_img(iid))
+    img_data = redis_client.get_image(iid)
     if not img_data:
         return err("not_found", "Image not found", 404)
         
@@ -183,21 +135,14 @@ def get_image(iid):
         return err("invalid_record", "Image record is corrupt", 500)
 
     try:
-        view_url = s3.generate_presigned_url(
-            "get_object",
-            Params={
-                "Bucket": AWS_S3_BUCKET_NAME,
-                "Key": s3_key,
-            },
-            ExpiresIn=3600
-        )
+        view_url = s3_client.generate_presigned_download_url(s3_key)
         return redirect(view_url, code=302)
         
-    except ClientError as e:
+    except Exception as e:
         print(f"S3 GET Error: {e}")
         return err("s3_error", "Could not get image URL", 500)
 
-# --- NEW: Delete Image Endpoint ---
+# --- Delete Image Endpoint ---
 
 @app.delete("/api/v1/image/<iid>")
 def delete_image(iid):
@@ -209,7 +154,7 @@ def delete_image(iid):
     uid = auth["uid"]
     
     # 2. Get image data from Redis
-    img_data = r.hgetall(k_img(iid))
+    img_data = redis_client.get_image(iid)
     if not img_data:
         return err("not_found", "Image not found", 404)
         
@@ -223,17 +168,14 @@ def delete_image(iid):
 
     try:
         # 4. Delete the object from S3
-        s3.delete_object(Bucket=AWS_S3_BUCKET_NAME, Key=s3_key)
+        s3_client.delete_object(s3_key)
         
         # 5. Delete the data from Redis
-        pipe = r.pipeline()
-        pipe.delete(k_img(iid))
-        pipe.zrem(k_user_images(uid), iid)
-        pipe.execute()
+        redis_client.delete_image_from_redis(iid, uid)
         
         return ok({"status": "deleted", "id": iid})
         
-    except ClientError as e:
+    except Exception as e:
         print(f"S3 DELETE Error: {e}")
         # If S3 fails, we don't delete from Redis
         return err("s3_error", "Could not delete image from S3", 500)
