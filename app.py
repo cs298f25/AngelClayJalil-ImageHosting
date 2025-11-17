@@ -1,6 +1,8 @@
 from __future__ import annotations
 import os
+import re
 import time
+import unicodedata
 import uuid
 from dotenv import load_dotenv
 from flask import Flask, jsonify, request, render_template, url_for, redirect
@@ -18,6 +20,27 @@ signer = URLSafeSerializer(app.config["SECRET_KEY"], salt="api-key")
 def now(): return int(time.time())
 def ok(payload, status=200): return jsonify(payload), status
 def err(code, message, status): return jsonify({"error": {"code": code, "message": message}}), status
+
+def sanitize_filename(filename: str, max_len: int = 120) -> str:
+    """Normalize filenames so S3 keys are URL-safe and consistent."""
+    filename = filename or "file"
+    name, ext = os.path.splitext(filename)
+
+    def normalize(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value)
+        return normalized.encode("ascii", "ignore").decode()
+
+    safe_name = normalize(name)
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", safe_name).strip("-._").lower()
+    if not safe_name:
+        safe_name = "file"
+    safe_name = safe_name[:max_len]
+
+    safe_ext = normalize(ext).lower()
+    safe_ext = re.sub(r"[^a-z0-9]", "", safe_ext)
+    safe_ext = f".{safe_ext}" if safe_ext else ""
+
+    return f"{safe_name}{safe_ext}"
 
 # --- Frontend Route ---
 @app.get("/")
@@ -45,7 +68,7 @@ def require_api_key():
     except Exception:
         return None
 
-@app.post("/api/v1/dev/issue-key")
+@app.post("/api/v1/dev/gg")
 def issue_key():
     username = f"user_{uuid.uuid4().hex[:8]}"
     uid = f"u_{username}"
@@ -69,14 +92,16 @@ def request_upload():
     if not all([filename, mime_type]):
         return err("validation", "filename and mime_type are required", 400)
     
+    safe_filename = sanitize_filename(filename)
     iid = f"img_{uuid.uuid4().hex[:12]}"
-    key = f"uploads/{uid}/{iid}/{filename}"
+    key = f"uploads/{uid}/{iid}/{safe_filename}"
 
     try:
         presigned_url = s3_client.generate_presigned_upload_url(key, mime_type)
         return ok({
             "iid": iid,
             "key": key,
+            "filename": safe_filename,
             "presigned_url": presigned_url,
         })
     except Exception as e:
@@ -122,7 +147,7 @@ def me_images():
             url = data.get("url")
             key = data.get("key")
 
-            if url and url.startswith("s3://") and key:
+            if key and url and (url.startswith("s3://") or "#" in url):
                 data["url"] = s3_client.get_public_url(key)
             elif not url and key:
                 data["url"] = s3_client.get_public_url(key)

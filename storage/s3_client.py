@@ -1,5 +1,7 @@
 """AWS S3 client and operations for object storage."""
 import os
+from urllib.parse import quote
+
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -26,7 +28,8 @@ def get_s3_url(key):
 
 def get_public_url(key):
     """Get the public HTTPS URL for an object (requires public bucket or CDN)."""
-    return f"https://{AWS_S3_BUCKET_NAME}.s3.amazonaws.com/{key}"
+    safe_key = quote(key, safe="/")
+    return f"https://{AWS_S3_BUCKET_NAME}.s3.amazonaws.com/{safe_key}"
 
 def generate_presigned_upload_url(key, mime_type, expires_in=3600):
     """Generate a presigned URL for uploading an object to S3."""
