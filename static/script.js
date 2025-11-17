@@ -103,6 +103,11 @@ function setupFileHandling(dropzone, fileInput, uploadBtn) {
   fileInput.addEventListener('change', () => updateFileList(fileInput.files));
 }
 
+function resolveUrl(url) {
+  if (!url) return '';
+  return url.startsWith('http') ? url : `${window.location.origin}${url}`;
+}
+
 // 3. Handle the S3 upload process
 async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl) {
   uploadBtn.disabled = true;
@@ -158,7 +163,8 @@ async function refreshGallery(gridEl) {
     items.forEach((item) => {
       const el = document.createElement('div');
       el.className = 'grid-item';
-      el.innerHTML = `<img src="${item.url}" alt="${item.filename}" loading="lazy">`;
+      const viewUrl = resolveUrl(item.url);
+      el.innerHTML = `<img src="${viewUrl}" alt="${item.filename}" loading="lazy">`;
       el.addEventListener('click', () => showImageModal(item));
       gridEl.appendChild(el);
     });
@@ -172,7 +178,7 @@ async function refreshGallery(gridEl) {
 function addLinkToResults(url, listEl) {
   const item = document.createElement('li');
   item.className = 'link-item';
-  const fullUrl = url.startsWith('http') ? url : `${window.location.origin}${url}`;
+  const fullUrl = resolveUrl(url);
   item.innerHTML = `
     <input class="link-url" type="text" value="${fullUrl}" readonly>
     <button class="button copy-btn">Copy</button>
@@ -203,9 +209,9 @@ function showImageModal(item) {
   
   currentModalImage = item; // NEW: Set the current image
   
-  modalImg.src = item.url;
+  modalImg.src = resolveUrl(item.url);
   modalImg.alt = item.filename;
-  modalLinkInput.value = `${window.location.origin}${item.url}`;
+  modalLinkInput.value = resolveUrl(item.url);
   
   modal.style.display = 'flex';
 }
