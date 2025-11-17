@@ -119,8 +119,16 @@ def me_images():
     items = []
     for data in results:
         if data:
-            if not data.get("url"):
-                data['url'] = f"/api/v1/image/{data['id']}"
+            url = data.get("url")
+            key = data.get("key")
+
+            if url and url.startswith("s3://") and key:
+                data["url"] = s3_client.get_public_url(key)
+            elif not url and key:
+                data["url"] = s3_client.get_public_url(key)
+            elif not data.get("url"):
+                data["url"] = f"/api/v1/image/{data['id']}"
+
             items.append(data)
             
     return ok({"items": items})
