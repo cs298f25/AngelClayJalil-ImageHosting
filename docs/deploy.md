@@ -17,8 +17,10 @@ Add CORS policy to S3 Bucket
             "POST"
         ],
         "AllowedOrigins": [
-            "http://{YOUR_EC2_IP}:8000",
-            "http://localhost:8000"
+            "http://{YOUR_EC2_IP}",
+            "http://{YOUR_EC2_IP}:80",
+            "http://localhost",
+            "http://localhost:80"
         ],
         "ExposeHeaders": []
     }

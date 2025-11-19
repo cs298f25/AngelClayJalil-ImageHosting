@@ -88,7 +88,7 @@ user:{uid}:images (sorted set)
    AWS_S3_BUCKET_NAME=your-bucket-name
    AWS_ACCESS_KEY_ID=your-access-key
    AWS_SECRET_ACCESS_KEY=your-secret-key
-   PORT=8000
+   PORT=80
    FLASK_DEBUG=1
    ```
 
@@ -102,7 +102,9 @@ user:{uid}:images (sorted set)
    python app.py
    ```
 
-The server will start on `http://localhost:8000` (or the PORT specified in your .env file).
+The server will start on `http://localhost:80` (or the PORT specified in your .env file).
+
+**Note:** Port 80 requires root privileges on Linux. For production, consider using a reverse proxy (nginx/apache) on port 80 that forwards to Flask on a higher port.
 
 ## Configuration
 
@@ -114,7 +116,7 @@ The server will start on `http://localhost:8000` (or the PORT specified in your 
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` |
 | `AWS_REGION` | AWS region for S3 | `us-east-1` |
 | `AWS_S3_BUCKET_NAME` | S3 bucket name | *Required* |
-| `PORT` | Port to run Flask app | `8000` |
+| `PORT` | Port to run Flask app | `8000` (or `80` for production) |
 | `FLASK_DEBUG` | Enable Flask debug mode | `1` |
 
 ### AWS S3 Configuration
