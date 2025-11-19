@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, render_template, redirect
 from itsdangerous import URLSafeSerializer
 from services import AuthService, ImageService
-from storage import redis_client # Only imported for the health check route
+from infrastructure import redis_client # Only imported for the health check route
 
 # --- Setup ---
 load_dotenv()
@@ -44,7 +44,7 @@ def redis_check():
         return err("redis_unreachable", str(e), 500)
 
 # --- Auth Routes ---
-@app.post("/api/v1/dev/gg")
+@app.post("/api/v1/dev/issue-key")
 def issue_key():
     # App asks Service to create user
     user_data = AuthService.create_new_user()
