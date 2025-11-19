@@ -1,13 +1,13 @@
 from __future__ import annotations
 import os
-import re
-import time
-import unicodedata
-import uuid
 from dotenv import load_dotenv
-from flask import Flask, jsonify, request, render_template, url_for, redirect
+from flask import Flask, jsonify, request, render_template, redirect
 from itsdangerous import URLSafeSerializer
-from storage import redis_client, s3_client
+
+# Import our new Service Layer
+# NOTICE: We do NOT import redis_client or s3_client here anymore.
+from services import AuthService, ImageService
+from storage import redis_client # Only imported for the health check route
 
 # --- Setup ---
 load_dotenv()
@@ -16,31 +16,19 @@ app = Flask(__name__, template_folder="template", static_folder="static")
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET", "dev-secret")
 signer = URLSafeSerializer(app.config["SECRET_KEY"], salt="api-key")
 
-# --- Helper functions ---
-def now(): return int(time.time())
+# --- HTTP Helper functions ---
 def ok(payload, status=200): return jsonify(payload), status
 def err(code, message, status): return jsonify({"error": {"code": code, "message": message}}), status
 
-def sanitize_filename(filename: str, max_len: int = 120) -> str:
-    """Normalize filenames so S3 keys are URL-safe and consistent."""
-    filename = filename or "file"
-    name, ext = os.path.splitext(filename)
-
-    def normalize(value: str) -> str:
-        normalized = unicodedata.normalize("NFKD", value)
-        return normalized.encode("ascii", "ignore").decode()
-
-    safe_name = normalize(name)
-    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", safe_name).strip("-._").lower()
-    if not safe_name:
-        safe_name = "file"
-    safe_name = safe_name[:max_len]
-
-    safe_ext = normalize(ext).lower()
-    safe_ext = re.sub(r"[^a-z0-9]", "", safe_ext)
-    safe_ext = f".{safe_ext}" if safe_ext else ""
-
-    return f"{safe_name}{safe_ext}"
+# --- Auth Middleware (HTTP Concern) ---
+def require_api_key():
+    token = (request.headers.get("X-API-Key") or "").strip()
+    if not token:
+        return None
+    try:
+        return signer.loads(token)
+    except Exception:
+        return None
 
 # --- Frontend Route ---
 @app.get("/")
@@ -53,38 +41,30 @@ def health_check():
 
 @app.get("/redis-check")
 def redis_check():
+    # This is a system diagnostic, so calling redis direct is acceptable,
+    # but could also be moved to a SystemService.
     try:
         return ok({"redis": bool(redis_client.ping_redis())})
     except Exception as e:
         return err("redis_unreachable", str(e), 500)
 
 # --- Auth Routes ---
-def require_api_key():
-    token = (request.headers.get("X-API-Key") or "").strip()
-    if not token:
-        return None
-    try:
-        return signer.loads(token)
-    except Exception:
-        return None
-
 @app.post("/api/v1/dev/gg")
 def issue_key():
-    username = f"user_{uuid.uuid4().hex[:8]}"
-    uid = f"u_{username}"
-    redis_client.create_user(uid, username, now())
-    token = signer.dumps({"uid": uid})
-    return ok({"api_key": token, "uid": uid})
+    # App asks Service to create user
+    user_data = AuthService.create_new_user()
+    
+    # App handles the delivery-specific logic (creating the token)
+    token = signer.dumps({"uid": user_data["uid"]})
+    return ok({"api_key": token, "uid": user_data["uid"]})
 
-# --- S3 Upload Endpoints ---
+# --- S3 Upload Routes ---
 
 @app.post("/api/v1/upload/request")
 def request_upload():
     auth = require_api_key()
-    if not auth:
-        return err("auth", "invalid api key", 401)
+    if not auth: return err("auth", "invalid api key", 401)
     
-    uid = auth["uid"]
     req_data = request.json or {}
     filename = req_data.get("filename")
     mime_type = req_data.get("mime_type")
@@ -92,127 +72,80 @@ def request_upload():
     if not all([filename, mime_type]):
         return err("validation", "filename and mime_type are required", 400)
     
-    safe_filename = sanitize_filename(filename)
-    iid = f"img_{uuid.uuid4().hex[:12]}"
-    key = f"uploads/{uid}/{iid}/{safe_filename}"
-
     try:
-        presigned_url = s3_client.generate_presigned_upload_url(key, mime_type)
-        return ok({
-            "iid": iid,
-            "key": key,
-            "filename": safe_filename,
-            "presigned_url": presigned_url,
-        })
+        # Delegate to Service Layer
+        result = ImageService.initiate_upload(auth["uid"], filename, mime_type)
+        return ok(result)
     except Exception as e:
-        print(f"S3 Error: {e}")
-        return err("s3_error", "Could not generate S3 upload URL.", 500)
+        print(f"Error: {e}")
+        return err("service_error", "Could not initiate upload.", 500)
 
 @app.post("/api/v1/upload/complete")
 def complete_upload():
     auth = require_api_key()
-    if not auth:
-        return err("auth", "invalid api key", 401)
+    if not auth: return err("auth", "invalid api key", 401)
     
-    uid = auth["uid"]
     req_data = request.json or {}
-    iid = req_data.get("iid")
-    key = req_data.get("key")
-    filename = req_data.get("filename")
-    mime_type = req_data.get("mime_type")
+    
+    # Validation
+    required = ["iid", "key", "filename", "mime_type"]
+    if not all(k in req_data for k in required):
+        return err("validation", "missing required fields", 400)
 
-    if not all([iid, key, filename, mime_type]):
-        return err("validation", "iid, key, filename, and mime_type are required", 400)
+    try:
+        # Delegate to Service Layer
+        result = ImageService.finalize_upload(
+            auth["uid"], 
+            req_data["iid"], 
+            req_data["key"], 
+            req_data["filename"], 
+            req_data["mime_type"]
+        )
+        return ok(result, 201)
+    except Exception as e:
+        print(f"Error: {e}")
+        return err("save_error", "Could not save upload metadata", 500)
 
-    img_url_ref = s3_client.get_public_url(key)
-    redis_client.store_image(iid, uid, key, img_url_ref, filename, mime_type, now())
-
-    return ok({"id": iid, "url": img_url_ref}, 201)
-
-# --- Gallery Endpoints ---
+# --- Gallery Routes ---
 
 @app.get("/api/v1/me/images")
 def me_images():
     auth = require_api_key()
-    if not auth:
-        return err("auth", "invalid api key", 401)
+    if not auth: return err("auth", "invalid api key", 401)
     
-    uid = auth["uid"]
-    iids = redis_client.get_user_images(uid, limit=50)
-    results = redis_client.get_images_batch(iids)
-    
-    items = []
-    for data in results:
-        if data:
-            url = data.get("url")
-            key = data.get("key")
-
-            if key and url and (url.startswith("s3://") or "#" in url):
-                data["url"] = s3_client.get_public_url(key)
-            elif not url and key:
-                data["url"] = s3_client.get_public_url(key)
-            elif not data.get("url"):
-                data["url"] = f"/api/v1/image/{data['id']}"
-
-            items.append(data)
+    # App Layer just asks for the data. 
+    # Service Layer handles the complex URL formatting logic.
+    items = ImageService.get_user_gallery(auth["uid"])
             
     return ok({"items": items})
 
 @app.get("/api/v1/image/<iid>")
 def get_image(iid):
-    img_data = redis_client.get_image(iid)
-    if not img_data:
-        return err("not_found", "Image not found", 404)
-        
-    s3_key = img_data.get("key")
-    if not s3_key:
-        return err("invalid_record", "Image record is corrupt", 500)
-
     try:
-        view_url = s3_client.generate_presigned_download_url(s3_key)
-        return redirect(view_url, code=302)
+        view_url = ImageService.get_image_download_url(iid)
+        if not view_url:
+             return err("not_found", "Image not found", 404)
         
-    except Exception as e:
-        print(f"S3 GET Error: {e}")
+        return redirect(view_url, code=302)
+    except ValueError:
+        return err("invalid_record", "Image record is corrupt", 500)
+    except Exception:
         return err("s3_error", "Could not get image URL", 500)
 
-# --- Delete Image Endpoint ---
+# --- Delete Route ---
 
 @app.delete("/api/v1/image/<iid>")
 def delete_image(iid):
-    # 1. Check if user is authenticated
     auth = require_api_key()
-    if not auth:
-        return err("auth", "invalid api key", 401)
+    if not auth: return err("auth", "invalid api key", 401)
     
-    uid = auth["uid"]
+    # Delegate logic (including ownership check) to Service
+    result = ImageService.delete_image(iid, auth["uid"])
     
-    # 2. Get image data from Redis
-    img_data = redis_client.get_image(iid)
-    if not img_data:
-        return err("not_found", "Image not found", 404)
+    if "error" in result:
+        return err(result["error"], "Operation failed", result.get("code", 500))
         
-    # 3. Check if this user owns the image
-    if img_data.get("owner_uid") != uid:
-        return err("auth", "You do not have permission to delete this image", 403)
-        
-    s3_key = img_data.get("key")
-    if not s3_key:
-        return err("invalid_record", "Image record is corrupt", 500)
-
-    try:
-        # 4. Delete the object from S3
-        s3_client.delete_object(s3_key)
-        
-        # 5. Delete the data from Redis
-        redis_client.delete_image_from_redis(iid, uid)
-        
-        return ok({"status": "deleted", "id": iid})
-        
-    except Exception as e:
-        print(f"S3 DELETE Error: {e}")
-        # If S3 fails, we don't delete from Redis
-        return err("s3_error", "Could not delete image from S3", 500)
+    return ok({"status": "deleted", "id": iid})
 
 # --- Run the app ---
 if __name__ == "__main__":
