@@ -1,129 +1,202 @@
-# cli.py
-"""Simple CLI client for the image hosting server.
-This is what we run from the terminal to test the API."""
+#!/usr/bin/env python3
+"""
+Tiny CLI helper for our Image Hosting project.
+
+It talks to the Flask API:
+- login: asks the server for a dev API key and saves it locally
+- upload: uploads an image via S3 presigned URL and finalizes it
+
+It supports BOTH response shapes:
+- {"data": {...}}    (new pattern)
+- {...}              (older pattern)
+"""
 
 import argparse
 import json
+import mimetypes
 import os
+import sys
 from pathlib import Path
 
 import requests
 
-# The server URL. On EC2, we still call 127.0.0.1:8000 because it's local to the VM.
-BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8000")
-
-# Where we store the API key on the machine running the CLI
-AUTH_FILE = Path.home() / ".imagehost_auth.json"
+KEY_PATH = Path.home() / ".imagehost_key"
 
 
-def load_auth():
-    """Loads auth info from disk. If you never logged in, this returns None."""
-    if not AUTH_FILE.exists():
-        return None
-    with AUTH_FILE.open() as f:
-        return json.load(f)
+# Helpers
+# -----------------------
+def get_base_url() -> str:
+    """
+    Where the API lives.
+    On your Mac:
+      - local:  http://127.0.0.1:8000
+      - EC2:    http://34.204.188.204:8000
+    """
+    return os.getenv("BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 
 
-def save_auth(data):
-    """Saves auth info (api_key + uid) so we don't have to log in every time."""
-    with AUTH_FILE.open("w") as f:
-        json.dump(data, f)
-    print(f"saved api key for {data.get('uid')}")
+def save_api_key(api_key: str) -> None:
+    KEY_PATH.write_text(api_key.strip(), encoding="utf-8")
+    print(f"[ok] saved API key to {KEY_PATH}")
 
 
-def call_api(path, method="GET", headers=None, params=None, files=None, json_body=None):
-    """Tiny wrapper around requests so we don't repeat the base URL logic everywhere."""
-    url = BASE_URL.rstrip("/") + path
-    headers = headers or {}
+def load_api_key() -> str:
+    if not KEY_PATH.exists():
+        print("[error] no API key found. Run `python cli.py login` first.")
+        sys.exit(1)
+    return KEY_PATH.read_text(encoding="utf-8").strip()
 
-    resp = requests.request(method, url, headers=headers, params=params, files=files, json=json_body)
+
+def api_request(method: str, path: str, json_body=None, use_auth: bool = True):
+    """
+    Basic HTTP wrapper.
+    It accepts BOTH:
+
+      { "data": {...} }
+      {...}
+    """
+    url = get_base_url() + path
+    headers = {}
+
+    if use_auth:
+        api_key = load_api_key()
+        headers["X-API-Key"] = api_key
+
+    try:
+        resp = requests.request(method, url, json=json_body, headers=headers)
+    except Exception as e:
+        print(f"[error] could not connect to {url}: {e}")
+        sys.exit(1)
 
     if not resp.ok:
-        print(f"{method} {path} failed: {resp.status_code} {resp.text}")
-        raise SystemExit(1)
+        print(f"[error] HTTP {resp.status_code} from server:")
+        try:
+            print(json.dumps(resp.json(), indent=2))
+        except Exception:
+            print(resp.text)
+        sys.exit(1)
 
-    return resp.json()
+    # Try to parse JSON and unwrap data if present
+    try:
+        body = resp.json()
+    except Exception:
+        print("[error] server returned non-JSON response:")
+        print(resp.text)
+        sys.exit(1)
 
+    if isinstance(body, dict) and "data" in body:
+        return body["data"]
+    else:
+        # Older server style – just return whole JSON
+        return body
 
 
 # Commands
-# -----------------------------
+# -----------------------
 def cmd_login(args):
-    """Asks the server for a dev API key and saves it locally."""
-    data = call_api("/api/v1/dev/issue-key", method="POST", json_body={})
-    payload = data["data"]
-    save_auth({"api_key": payload["api_key"], "uid": payload["uid"]})
+    print("[info] requesting dev API key...")
+    data = api_request("POST", "/api/v1/dev/issue-key", use_auth=False)
+
+    # Accept both shapes: {"api_key": ..., "uid": ...} OR nested under data
+    try:
+        api_key = data["api_key"]
+        uid = data["uid"]
+    except Exception:
+        print("[error] login response did not contain api_key/uid:")
+        print(json.dumps(data, indent=2))
+        sys.exit(1)
+
+    save_api_key(api_key)
+    print(f"[ok] got key for user {uid}")
 
 
 def cmd_upload(args):
-    """Uploads a single image file."""
-    auth = load_auth()
-    if not auth:
-        print("You need to run 'login' first.")
-        raise SystemExit(1)
+    img_path = Path(args.path).expanduser()
+    if not img_path.is_file():
+        print(f"[error] file does not exist: {img_path}")
+        sys.exit(1)
 
-    api_key = auth["api_key"]
+    # Guess MIME type
+    mime_type, _ = mimetypes.guess_type(str(img_path))
+    if not mime_type:
+        mime_type = "application/octet-stream"
 
-    filepath = Path(args.path)
-    if not filepath.exists():
-        print(f"File not found: {filepath}")
-        raise SystemExit(1)
+    filename = img_path.name
+    print(f"[info] requesting upload URL for {filename} ({mime_type})...")
 
-    # Open file in binary mode and send as multipart form data
-    with filepath.open("rb") as f:
-        files = {"file": (filepath.name, f)}
-        headers = {"X-API-Key": api_key}
+    # Step 1: ask API for presigned URL
+    payload = {
+        "filename": filename,
+        "mime_type": mime_type,
+    }
+    data = api_request("POST", "/api/v1/upload/request", json_body=payload, use_auth=True)
 
-        resp = call_api("/api/v1/image/upload", method="POST", headers=headers, files=files)
-        payload = resp["data"]
-        print(f"uploaded: {filepath.name}")
-        print(payload["url"])  # This should be the /api/v1/image/<iid> URL
+    # Expect at least these fields
+    try:
+        iid = data["iid"]
+        key = data["key"]
+        presigned_url = data["presigned_url"]
+    except Exception:
+        print("[error] upload request response missing fields:")
+        print(json.dumps(data, indent=2))
+        sys.exit(1)
+
+    # Step 2: actually upload the file bytes to S3
+    print("[info] uploading file bytes to S3 via presigned URL...")
+    with img_path.open("rb") as f:
+        put_resp = requests.put(
+            presigned_url,
+            data=f,
+            headers={"Content-Type": mime_type},
+        )
+
+    if not put_resp.ok:
+        print(f"[error] S3 upload failed: HTTP {put_resp.status_code}")
+        print(put_resp.text)
+        sys.exit(1)
+
+    print("[ok] file uploaded to S3. Finalizing metadata with API...")
+
+    # Step 3: tell API we’re done so it can store metadata in Redis
+    complete_payload = {
+        "iid": iid,
+        "key": key,
+        "filename": filename,
+        "mime_type": mime_type,
+    }
+
+    final_data = api_request(
+        "POST",
+        "/api/v1/upload/complete",
+        json_body=complete_payload,
+        use_auth=True,
+    )
+
+    print("[ok] upload complete!")
+    print(json.dumps(final_data, indent=2))
 
 
-def cmd_list(args):
-    """Lists all images for the current user."""
-    auth = load_auth()
-    if not auth:
-        print("You need to run 'login' first.")
-        raise SystemExit(1)
+# -----------------------
+# Argparse wiring
+# -----------------------
+def build_parser():
+    p = argparse.ArgumentParser(description="Image host CLI")
+    sub = p.add_subparsers(dest="command", required=True)
 
-    api_key = auth["api_key"]
-    headers = {"X-API-Key": api_key}
+    # login
+    lp = sub.add_parser("login", help="request a dev API key")
+    lp.set_defaults(func=cmd_login)
 
-    resp = call_api("/api/v1/image/list", method="GET", headers=headers)
-    images = resp["data"]["images"]
+    # upload
+    up = sub.add_parser("upload", help="upload an image file")
+    up.add_argument("path", help="path to an image file")
+    up.set_defaults(func=cmd_upload)
 
-    if not images:
-        print("No images uploaded yet.")
-        return
-
-    # Print like a simple table
-    for img in images:
-        iid = img.get("id", "?")
-        filename = img.get("filename", "?")
-        mime = img.get("mime", "?")
-        url = img.get("url", "?")
-        print(f"{iid}\t{filename}\t{mime}\t{url}")
+    return p
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Image hosting CLI")
-    subparsers = parser.add_subparsers(dest="command")
-    subparsers.required = True
-
-    # login
-    p_login = subparsers.add_parser("login", help="Get a dev API key")
-    p_login.set_defaults(func=cmd_login)
-
-    # upload
-    p_upload = subparsers.add_parser("upload", help="Upload an image")
-    p_upload.add_argument("path", help="Path to the image file")
-    p_upload.set_defaults(func=cmd_upload)
-
-    # list
-    p_list = subparsers.add_parser("list", help="List your images")
-    p_list.set_defaults(func=cmd_list)
-
+    parser = build_parser()
     args = parser.parse_args()
     args.func(args)
 

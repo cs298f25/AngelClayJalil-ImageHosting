@@ -13,18 +13,20 @@ app = Flask(__name__, template_folder="template", static_folder="static")
 
 app.config["SECRET_KEY"] = os.getenv("FLASK_SECRET", "dev-secret")
 signer = URLSafeSerializer(app.config["SECRET_KEY"], salt="api-key")
+GALLERY_UID = os.getenv("GALLERY_UID")
 
 
 # --- HTTP Helper functions ---
 def ok(payload, status=200):
-    return jsonify(payload), status
+    # Wrap everything in a data envelope so the CLI can always do data
+    return jsonify({"data": payload}), status
 
 
 def err(code, message, status):
     return jsonify({"error": {"code": code, "message": message}}), status
 
 
-# --- Auth Middleware (HTTP Concern) ---
+# --- Auth Middleware HTTP Concern ---
 def require_api_key():
     token = (request.headers.get("X-API-Key") or "").strip()
     if not token:
@@ -152,7 +154,7 @@ def delete_image(iid):
     if not auth:
         return err("auth", "invalid api key", 401)
 
-    # Delegate logic (including ownership check) to Service
+    # Delegate logic  to Service
     result = ImageService.delete_image(iid, auth["uid"])
 
     if "error" in result:
@@ -163,7 +165,7 @@ def delete_image(iid):
 
 # --- Run the app ---
 if __name__ == "__main__":
-    # You can tweak this for your demo. If your CLI uses 8000, set PORT=8000 in env.
+  #If  CLI uses 8000, set PORT=8000 in env.
     port = int(os.environ.get("PORT", 80))
     debug = os.environ.get("FLASK_DEBUG", "1") == "1"
     app.run(host="0.0.0.0", port=port, debug=debug)

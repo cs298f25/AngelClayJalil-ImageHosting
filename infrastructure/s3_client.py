@@ -22,8 +22,7 @@ class S3Client:
         self.bucket_name = bucket_name or os.getenv("AWS_S3_BUCKET_NAME")
 
         if not self.bucket_name:
-            # If this blows up, it usually means we forgot:
-            # export AWS_S3_BUCKET_NAME="your-bucket-name"
+          
             raise ValueError("AWS_S3_BUCKET_NAME environment variable not set.")
 
         # Real boto3 S3 client that actually talks to AWS
@@ -32,6 +31,7 @@ class S3Client:
             region_name=self.region,
             config=Config(signature_version="s3v4"),
         )
+        print(f"[S3Client] Using bucket={self.bucket_name} region={self.region}")
 
     # URL helpers
     # -----------------------

@@ -10,7 +10,7 @@ import unicodedata
 import time
 
 # These are our infrastructure-level clients (Redis + S3)
-# They handle the "how" of storage. Services decide the "when/why".
+# They handle the how of storage. Services decide the when/why.
 from infrastructure.redis_client import RedisClient
 from infrastructure.s3_client import S3Client
 
@@ -96,7 +96,7 @@ class ImageService:
         # Storing everything under uploads/<user>/<imageID>/<filename>
         key = f"uploads/{uid}/{iid}/{safe_filename}"
 
-        # Ask S3 to give us a “temporary upload link”
+        # Ask S3 to give us a temporary upload link
         presigned_url = s3_client.generate_presigned_upload_url(key, mime_type)
 
         return {
