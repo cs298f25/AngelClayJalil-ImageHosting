@@ -50,8 +50,13 @@ fi
 # ---------------------------------------------------
 echo "Configuring Nginx..."
 
+# --- FIX: Ensure the directory exists before writing the file ---
+if [ ! -d "/etc/nginx/conf.d" ]; then
+    echo "Creating Nginx configuration directory..."
+    sudo mkdir -p /etc/nginx/conf.d
+fi
+
 # We write the config file directly using sudo tee
-# This forwards traffic from Port 80 to localhost:8000
 sudo tee /etc/nginx/conf.d/imagehost.conf > /dev/null << 'EOF'
 server {
     listen 80;

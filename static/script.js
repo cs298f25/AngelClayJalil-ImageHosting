@@ -4,8 +4,8 @@
  */
 
 const API_KEY_STORAGE = 'imagehost_api_key';
-let filesToUpload = [];
-let currentModalImage = null; // NEW: Track the currently open image
+let filesToUpload = []; // This is our "Staging Area"
+let currentModalImage = null;
 
 // Helper to make API calls
 async function apiFetch(endpoint, options = {}, attempt = 0) {
@@ -36,7 +36,6 @@ async function apiFetch(endpoint, options = {}, attempt = 0) {
     let errorMessage;
     try {
       const err = await response.json();
-      // Handle the "error" envelope from python's err() function
       errorMessage = err.error?.message || 'API request failed';
     } catch (e) {
       errorMessage = `Server error: ${response.status} ${response.statusText}`;
@@ -46,9 +45,6 @@ async function apiFetch(endpoint, options = {}, attempt = 0) {
   
   const text = await response.text();
   const json = text ? JSON.parse(text) : {};
-  
-  // --- FIX IS HERE ---
-  // If the server wrapped the response in "data", unwrap it.
   return json.data ? json.data : json; 
 }
 
@@ -81,20 +77,21 @@ async function initApiKey({ force = false } = {}) {
   }
 }
 
-// 2. Handle file selection
-function setupFileHandling(dropzone, fileInput, uploadBtn) {
-  let fileList = [];
-  function updateFileList(newFiles) {
-    fileList = [...newFiles];
-    if (fileList.length > 0) {
-      dropzone.querySelector('p').textContent = `${fileList.length} file(s) selected`;
-      uploadBtn.disabled = false;
-    } else {
-      dropzone.querySelector('p').textContent = 'Drag & drop images here';
-      uploadBtn.disabled = true;
-    }
-    filesToUpload = fileList;
+// 2. Handle file selection & Preview Generation
+function setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer) {
+  
+  // A. Add new files to our staging array
+  function handleNewFiles(fileList) {
+    const incoming = Array.from(fileList);
+    // Append new files to existing ones
+    filesToUpload = [...filesToUpload, ...incoming];
+    renderPreviews(previewContainer, uploadBtn);
+    
+    // Reset input so you can select the same file again if needed
+    fileInput.value = ''; 
   }
+
+  // B. Drag & Drop Events
   dropzone.addEventListener('dragover', (e) => {
     e.preventDefault();
     dropzone.classList.add('drag-over');
@@ -103,10 +100,54 @@ function setupFileHandling(dropzone, fileInput, uploadBtn) {
   dropzone.addEventListener('drop', (e) => {
     e.preventDefault();
     dropzone.classList.remove('drag-over');
-    updateFileList(e.dataTransfer.files);
+    handleNewFiles(e.dataTransfer.files);
   });
+
+  // C. Click Events
   dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', () => updateFileList(fileInput.files));
+  fileInput.addEventListener('change', () => handleNewFiles(fileInput.files));
+}
+
+// 3. Render the little thumbnails
+function renderPreviews(container, uploadBtn) {
+  container.innerHTML = ''; // Clear current display
+
+  if (filesToUpload.length > 0) {
+    uploadBtn.disabled = false;
+    uploadBtn.textContent = `Upload ${filesToUpload.length} Image(s)`;
+  } else {
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = 'Upload Images';
+  }
+
+  filesToUpload.forEach((file, index) => {
+    const item = document.createElement('div');
+    item.className = 'preview-item';
+
+    // Create thumbnail
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(file);
+    img.alt = file.name;
+    // Free up memory when image loads
+    img.onload = () => URL.revokeObjectURL(img.src);
+
+    // Create Remove Button (X)
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'preview-remove';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.title = 'Remove image';
+    
+    // Remove Logic
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation(); // Stop bubbling
+      filesToUpload.splice(index, 1); // Remove from array
+      renderPreviews(container, uploadBtn); // Re-render
+    });
+
+    item.appendChild(img);
+    item.appendChild(removeBtn);
+    container.appendChild(item);
+  });
 }
 
 function resolveUrl(url) {
@@ -114,14 +155,18 @@ function resolveUrl(url) {
   return url.startsWith('http') ? url : `${window.location.origin}${url}`;
 }
 
-// 3. Handle the S3 upload process
-async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl) {
+// 4. Handle the S3 upload process
+async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl, previewContainer) {
+  if (filesToUpload.length === 0) return;
+
   uploadBtn.disabled = true;
   progressBarEl.parentElement.classList.add('active');
   resultsEl.hidden = true;
   linksListEl.innerHTML = '';
+  
   const totalFiles = filesToUpload.length;
   let filesUploaded = 0;
+
   for (const file of filesToUpload) {
     try {
       const { presigned_url, iid, key } = await apiFetch('/api/v1/upload/request', {
@@ -149,16 +194,25 @@ async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl) {
       console.error('Failed to upload file:', file.name, error);
     }
   }
+
+  // Cleanup after upload
   uploadBtn.disabled = false;
+  uploadBtn.textContent = 'Upload Images';
   resultsEl.hidden = false;
+  
+  // Clear the staging area
   filesToUpload = [];
+  renderPreviews(previewContainer, uploadBtn);
+  
   console.log('All uploads complete');
   setTimeout(() => {
     document.getElementById('refresh-gallery').click();
-  }, 200);
+    progressBarEl.parentElement.classList.remove('active');
+    progressBarEl.style.width = '0%';
+  }, 1000);
 }
 
-// 4. Handle refreshing the gallery
+// 5. Handle refreshing the gallery
 async function refreshGallery(gridEl) {
   gridEl.innerHTML = '<p class="grid-item-placeholder">Loading...</p>';
   try {
@@ -182,7 +236,7 @@ async function refreshGallery(gridEl) {
   }
 }
 
-// 5. UI Helpers
+// 6. UI Helpers
 function addLinkToResults(url, listEl) {
   const item = document.createElement('li');
   item.className = 'link-item';
@@ -209,13 +263,13 @@ function addLinkToResults(url, listEl) {
   listEl.prepend(item);
 }
 
-// 6. Function to show the image modal
+// 7. Function to show the image modal
 function showImageModal(item) {
   const modal = document.getElementById('image-modal');
   const modalImg = document.getElementById('modal-img');
   const modalLinkInput = document.getElementById('modal-link-input');
   
-  currentModalImage = item; // NEW: Set the current image
+  currentModalImage = item; 
   
   modalImg.src = resolveUrl(item.url);
   modalImg.alt = item.filename;
@@ -224,39 +278,33 @@ function showImageModal(item) {
   modal.style.display = 'flex';
 }
 
-// --- NEW: Function to handle deleting an image ---
+// 8. Delete Image Logic
 async function handleDeleteImage() {
-  if (!currentModalImage) return; // Safety check
+  if (!currentModalImage) return; 
   
   const iid = currentModalImage.id;
   const filename = currentModalImage.filename;
 
-  // Show a confirmation dialog
   if (!confirm(`Are you sure you want to delete this image: ${filename}?`)) {
     return;
   }
   
   try {
-    // Call the new DELETE endpoint
     await apiFetch(`/api/v1/image/${iid}`, {
       method: 'DELETE',
     });
-    
-    // Success! Close the modal and refresh the gallery
-    closeModal(); // Call the close function
-    document.getElementById('refresh-gallery').click(); // Refresh gallery
-    
+    closeModal(); 
+    document.getElementById('refresh-gallery').click(); 
   } catch (error) {
     console.error('Failed to delete image:', error);
     alert(`Error: ${error.message}`);
   }
 }
 
-// --- NEW: Renamed function so we can call it ---
 function closeModal() {
   const modal = document.getElementById('image-modal');
   modal.style.display = 'none';
-  currentModalImage = null; // NEW: Clear the current image
+  currentModalImage = null; 
 }
 
 // --- Main execution ---
@@ -274,7 +322,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalCloseBtn = document.getElementById('modal-close-btn');
   const modalCopyBtn = document.getElementById('modal-copy-btn');
   const modalLinkInput = document.getElementById('modal-link-input');
-  const modalDeleteBtn = document.getElementById('modal-delete-btn'); // NEW: Get delete button
+  const modalDeleteBtn = document.getElementById('modal-delete-btn'); 
+  
+  // NEW ELEMENT
+  const previewContainer = document.getElementById('file-previews');
 
   if (!dropzone) {
     console.error('Fatal: UI elements not found!');
@@ -282,10 +333,12 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Set up all event listeners
-  setupFileHandling(dropzone, fileInput, uploadBtn);
+  setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer);
+  
   uploadBtn.addEventListener('click', () =>
-    handleUpload(uploadBtn, progressBar, uploadResults, linksList)
+    handleUpload(uploadBtn, progressBar, uploadResults, linksList, previewContainer)
   );
+  
   refreshBtn.addEventListener('click', () => refreshGallery(galleryGrid));
 
   // Add Modal event listeners
@@ -310,7 +363,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 2000);
   });
   
-  // NEW: Add delete button event listener
   modalDeleteBtn.addEventListener('click', handleDeleteImage);
 
   // Init API key and load initial gallery
