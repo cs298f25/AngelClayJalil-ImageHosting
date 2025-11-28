@@ -500,3 +500,12 @@ section h2 {
   background: #c82333;
   transform: scale(1.1);
 }
+
+.link-thumb {
+  width: 48px;
+  height: 48px;
+  object-fit: cover;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  flex-shrink: 0; 
+}

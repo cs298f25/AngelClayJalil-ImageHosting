@@ -80,18 +80,13 @@ async function initApiKey({ force = false } = {}) {
 // 2. Handle file selection & Preview Generation
 function setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer) {
   
-  // A. Add new files to our staging array
   function handleNewFiles(fileList) {
     const incoming = Array.from(fileList);
-    // Append new files to existing ones
     filesToUpload = [...filesToUpload, ...incoming];
     renderPreviews(previewContainer, uploadBtn);
-    
-    // Reset input so you can select the same file again if needed
     fileInput.value = ''; 
   }
 
-  // B. Drag & Drop Events
   dropzone.addEventListener('dragover', (e) => {
     e.preventDefault();
     dropzone.classList.add('drag-over');
@@ -103,14 +98,13 @@ function setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer) {
     handleNewFiles(e.dataTransfer.files);
   });
 
-  // C. Click Events
   dropzone.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => handleNewFiles(fileInput.files));
 }
 
-// 3. Render the little thumbnails
+// 3. Render the staging thumbnails
 function renderPreviews(container, uploadBtn) {
-  container.innerHTML = ''; // Clear current display
+  container.innerHTML = ''; 
 
   if (filesToUpload.length > 0) {
     uploadBtn.disabled = false;
@@ -124,24 +118,20 @@ function renderPreviews(container, uploadBtn) {
     const item = document.createElement('div');
     item.className = 'preview-item';
 
-    // Create thumbnail
     const img = document.createElement('img');
     img.src = URL.createObjectURL(file);
     img.alt = file.name;
-    // Free up memory when image loads
     img.onload = () => URL.revokeObjectURL(img.src);
 
-    // Create Remove Button (X)
     const removeBtn = document.createElement('button');
     removeBtn.className = 'preview-remove';
     removeBtn.innerHTML = '&times;';
     removeBtn.title = 'Remove image';
     
-    // Remove Logic
     removeBtn.addEventListener('click', (e) => {
-      e.stopPropagation(); // Stop bubbling
-      filesToUpload.splice(index, 1); // Remove from array
-      renderPreviews(container, uploadBtn); // Re-render
+      e.stopPropagation(); 
+      filesToUpload.splice(index, 1); 
+      renderPreviews(container, uploadBtn); 
     });
 
     item.appendChild(img);
@@ -187,7 +177,10 @@ async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl, pr
         method: 'POST',
         body: { iid, key, filename: file.name, mime_type: file.type },
       });
-      addLinkToResults(url, linksListEl);
+      
+      // --- UPDATE: Pass the file object so we can show a thumbnail ---
+      addLinkToResults(url, linksListEl, file);
+      
       filesUploaded++;
       progressBarEl.style.width = `${(filesUploaded / totalFiles) * 100}%`;
     } catch (error) {
@@ -195,12 +188,10 @@ async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl, pr
     }
   }
 
-  // Cleanup after upload
   uploadBtn.disabled = false;
   uploadBtn.textContent = 'Upload Images';
   resultsEl.hidden = false;
   
-  // Clear the staging area
   filesToUpload = [];
   renderPreviews(previewContainer, uploadBtn);
   
@@ -236,18 +227,38 @@ async function refreshGallery(gridEl) {
   }
 }
 
-// 6. UI Helpers
-function addLinkToResults(url, listEl) {
+// 6. UI Helpers (UPDATED FOR THUMBNAILS)
+function addLinkToResults(url, listEl, file) {
   const item = document.createElement('li');
   item.className = 'link-item';
   const fullUrl = resolveUrl(url);
-  item.innerHTML = `
-    <input class="link-url" type="text" value="${fullUrl}" readonly>
+  
+  // --- Create Thumbnail ---
+  const img = document.createElement('img');
+  img.className = 'link-thumb';
+  img.src = URL.createObjectURL(file); // Use the local file for instant preview
+  img.alt = file.name;
+  
+  // --- Create Input & Button container ---
+  // We use HTML string for the inputs, but append the image via JS
+  const controlsDiv = document.createElement('div');
+  controlsDiv.style.flex = '1';
+  controlsDiv.style.display = 'flex';
+  controlsDiv.style.gap = '0.5rem';
+  
+  controlsDiv.innerHTML = `
+    <input class="link-url" type="text" value="${fullUrl}" readonly style="width: 100%">
     <button class="button copy-btn">Copy</button>
   `;
-  item.querySelector('.copy-btn').addEventListener('click', (e) => {
+
+  // Append elements
+  item.appendChild(img);
+  item.appendChild(controlsDiv);
+  
+  // Add Copy Logic
+  controlsDiv.querySelector('.copy-btn').addEventListener('click', (e) => {
     const button = e.target;
-    const input = item.querySelector('.link-url');
+    const input = controlsDiv.querySelector('.link-url');
     button.textContent = 'Copied!';
     input.focus();
     input.select();
@@ -260,6 +271,7 @@ function addLinkToResults(url, listEl) {
       button.textContent = 'Copy';
     }, 2000);
   });
+  
   listEl.prepend(item);
 }
 
@@ -309,7 +321,6 @@ function closeModal() {
 
 // --- Main execution ---
 document.addEventListener('DOMContentLoaded', () => {
-  // Get all DOM elements
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
   const uploadBtn = document.getElementById('upload-btn');
@@ -323,16 +334,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const modalCopyBtn = document.getElementById('modal-copy-btn');
   const modalLinkInput = document.getElementById('modal-link-input');
   const modalDeleteBtn = document.getElementById('modal-delete-btn'); 
-  
-  // NEW ELEMENT
   const previewContainer = document.getElementById('file-previews');
 
-  if (!dropzone) {
-    console.error('Fatal: UI elements not found!');
-    return;
-  }
+  if (!dropzone) return;
 
-  // Set up all event listeners
   setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer);
   
   uploadBtn.addEventListener('click', () =>
@@ -341,31 +346,21 @@ document.addEventListener('DOMContentLoaded', () => {
   
   refreshBtn.addEventListener('click', () => refreshGallery(galleryGrid));
 
-  // Add Modal event listeners
   modalCloseBtn.addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => {
-    if (e.target === modal) {
-      closeModal();
-    }
+    if (e.target === modal) closeModal();
   });
 
   modalCopyBtn.addEventListener('click', (e) => {
     e.target.textContent = 'Copied!';
     modalLinkInput.focus();
     modalLinkInput.select();
-    try {
-      document.execCommand('copy');
-    } catch (err) {
-      console.error('Fallback: Oops, unable to copy', err);
-    }
-    setTimeout(() => {
-      e.target.textContent = 'Copy';
-    }, 2000);
+    try { document.execCommand('copy'); } catch (err) {}
+    setTimeout(() => { e.target.textContent = 'Copy'; }, 2000);
   });
   
   modalDeleteBtn.addEventListener('click', handleDeleteImage);
 
-  // Init API key and load initial gallery
   initApiKey().then(() => {
     refreshGallery(galleryGrid);
   });
