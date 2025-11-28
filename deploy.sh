@@ -3,7 +3,7 @@ set -e
 
 # --- CONFIGURATION ---
 APP_NAME="ImageHosting"
-VENV_NAME="venv"
+VENV_NAME=".venv"
 
 echo "=== Deploying $APP_NAME ==="
 
