@@ -3,6 +3,7 @@ How to deploy:
 --- S3 Bucket Setup ---
 
 Create an S3 Bucket with Public Access
+
 Add this policy to the bucket
 ```
 {
@@ -41,9 +42,13 @@ Add this CORS Configuration
 ---  EC2 Instance Setup ---
 
 Create an EC2 Instance with HTTP and HTTPS enabled
-    - Make sure to Launch EC2 Instance with the LabInstanceProfile 
+    
+- Make sure to Launch EC2 Instance with the LabInstanceProfile 
+
 SSH into the EC2 Instance
+
 Install Git
+
 Clone the Repository
 
 Set up the .env file as shown
@@ -61,4 +66,5 @@ AWS_S3_BUCKET_NAME=<bucket-name>
 AWS_REGION=<aws-region>
 ```
 Activate the Deploy Script and the Application is running! (You can check the app.log folder to verify)
+
 When done with the application, run the down script to terminate it. 
