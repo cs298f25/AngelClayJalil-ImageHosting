@@ -2,30 +2,46 @@
 
 ## Overview
 
-ImageHosting is a Flask-based image hosting service that stores images in AWS S3 and metadata in Redis. Users can upload, view, and manage their images through a REST API.
+ImageHosting is a Flask-based image hosting service that stores images in AWS S3 and metadata in Redis. Users can upload, view, and manage their images through a REST API and web interface.
 
 ## Tech Stack
 
 - **Backend Framework:** Flask (Python)
+- **Web Server:** Nginx (reverse proxy on port 80) + Gunicorn (WSGI server on port 8000)
 - **Database:** Redis (for metadata storage)
 - **Storage:** AWS S3 (for image files)
 - **Authentication:** API key-based (using itsdangerous URLSafeSerializer)
+- **Frontend:** Vanilla JavaScript with HTML/CSS
 
 ## Architecture
 
 ### Components
 
-1. **Flask Application (`app.py`)**
+1. **Nginx Reverse Proxy**
+   - Listens on port 80 (HTTP)
+   - Proxies all requests to Gunicorn on port 8000
+   - Handles static file serving (optional)
+
+2. **Flask Application (`app.py`)**
    - Handles HTTP requests and routing
    - Manages authentication and authorization
-   - Coordinates between Redis and S3
+   - Delegates business logic to Service Layer
 
-2. **Redis Database**
+3. **Service Layer (`services.py`)**
+   - `AuthService`: User registration, login, and authentication
+   - `ImageService`: Image upload, retrieval, deletion, and gallery management
+   - Contains all business logic separated from HTTP concerns
+
+4. **Infrastructure Layer**
+   - `infrastructure/redis_client.py`: Redis connection and operations
+   - `infrastructure/s3_client.py`: S3 operations and presigned URL generation
+
+5. **Redis Database**
    - Stores user metadata (`user:{uid}`)
    - Stores image metadata (`img:{iid}`)
    - Maintains user image lists (`user:{uid}:images` sorted set)
 
-3. **AWS S3**
+6. **AWS S3**
    - Stores actual image files
    - Images are organized by: `uploads/{uid}/{iid}/{filename}`
    - Uses presigned URLs for secure uploads/downloads
@@ -74,10 +90,18 @@ user:{uid}:images (sorted set)
 
 1. **Clone the repository** (if applicable)
 
-2. **Install dependencies:**
+2. **Run the deployment script:**
    ```bash
-   pip install -r requirements.txt
+   ./deploy.sh
    ```
+   
+   This script will:
+   - Install Redis and Nginx (if on Amazon Linux)
+   - Configure Nginx to proxy port 80 → 8000
+   - Create Python virtual environment
+   - Install Python dependencies
+   - Start Redis
+   - Start the application (Gunicorn in production, Flask dev server locally)
 
 3. **Set up environment variables:**
    Create a `.env` file in the project root:
@@ -88,23 +112,14 @@ user:{uid}:images (sorted set)
    AWS_S3_BUCKET_NAME=your-bucket-name
    AWS_ACCESS_KEY_ID=your-access-key
    AWS_SECRET_ACCESS_KEY=your-secret-key
-   PORT=80
    FLASK_DEBUG=1
    ```
 
-4. **Start Redis:**
-   ```bash
-   redis-server
-   ```
+4. **Access the application:**
+   - **Production (EC2)**: `http://your-server-ip` (port 80, no port number needed)
+   - **Local development**: `http://localhost:8000` (Flask dev server)
 
-5. **Run the application:**
-   ```bash
-   python app.py
-   ```
-
-The server will start on `http://localhost:80` (or the PORT specified in your .env file).
-
-**Note:** Port 80 requires root privileges on Linux. For production, consider using a reverse proxy (nginx/apache) on port 80 that forwards to Flask on a higher port.
+**Note:** The deployment script automatically sets up Nginx as a reverse proxy. In production, Nginx listens on port 80 and forwards requests to Gunicorn on port 8000.
 
 ## Configuration
 
@@ -116,8 +131,11 @@ The server will start on `http://localhost:80` (or the PORT specified in your .e
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` |
 | `AWS_REGION` | AWS region for S3 | `us-east-1` |
 | `AWS_S3_BUCKET_NAME` | S3 bucket name | *Required* |
-| `PORT` | Port to run Flask app | `8000` (or `80` for production) |
+| `AWS_ACCESS_KEY_ID` | AWS access key | *Required* |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key | *Required* |
 | `FLASK_DEBUG` | Enable Flask debug mode | `1` |
+
+**Note:** The application runs on port 8000 internally (Gunicorn). Nginx proxies from port 80 to port 8000 automatically.
 
 ### AWS S3 Configuration
 
@@ -152,34 +170,59 @@ Example IAM policy:
 
 ```
 .
-├── app.py              # Main Flask application
-├── index.html          # Frontend HTML
-├── script.js           # Frontend JavaScript
-├── style.css           # Frontend CSS
-├── requirements.txt    # Python dependencies
-├── api.md             # API documentation
-├── developers.md      # This file
-├── README.md          # Project overview
-└── deploy.md          # Deployment instructions
+├── app.py                  # Main Flask application (HTTP layer)
+├── services.py             # Service layer (business logic)
+├── cli.py                  # Command-line interface
+├── deploy.sh               # Deployment script
+├── down.sh                 # Shutdown script
+├── requirements.txt        # Python dependencies
+├── infrastructure/
+│   ├── redis_client.py    # Redis client wrapper
+│   └── s3_client.py       # S3 client wrapper
+├── template/
+│   └── index.html         # Frontend HTML template
+├── static/
+│   ├── script.js          # Frontend JavaScript
+│   └── style.css          # Frontend CSS
+├── test/                  # Test files
+│   ├── test_app.py
+│   ├── test_services.py
+│   ├── test_cli.py
+│   └── test_infrastructure.py
+└── docs/                  # Documentation
+    ├── api.md
+    ├── developers.md
+    └── deploy.md
 ```
 
-### Key Functions
+### Key Components
 
-#### Authentication
+#### Service Layer (`services.py`)
+- **`AuthService`**: 
+  - `register_user(username, password)`: Creates new user account
+  - `login_user(username, password)`: Authenticates user and returns user data
+  - `create_new_user()`: Legacy method for dev API key issuance
+- **`ImageService`**:
+  - `initiate_upload(uid, filename, mime_type)`: Generates presigned S3 upload URL
+  - `finalize_upload(uid, iid, key, filename, mime_type)`: Saves image metadata
+  - `get_user_gallery(uid)`: Retrieves all images for a user
+  - `get_image_download_url(iid)`: Generates presigned S3 download URL
+  - `delete_image(iid, uid)`: Deletes image and verifies ownership
+
+#### Infrastructure Layer
+- **`RedisClient`** (`infrastructure/redis_client.py`):
+  - Handles all Redis operations
+  - Manages connections and error handling
+- **`S3Client`** (`infrastructure/s3_client.py`):
+  - Generates presigned URLs for uploads/downloads
+  - Handles S3 object operations
+
+#### HTTP Layer (`app.py`)
 - `require_api_key()`: Validates API key from `X-API-Key` header
 - API keys are signed using `URLSafeSerializer` with the Flask secret key
 - Decoded tokens contain `{"uid": "user_id"}`
-
-#### Redis Keys
-- `k_user(uid)`: Returns `user:{uid}`
-- `k_user_images(uid)`: Returns `user:{uid}:images`
-- `k_img(iid)`: Returns `img:{iid}`
-
-#### Helper Functions
-- `now()`: Returns current Unix timestamp
 - `ok(payload, status)`: Returns JSON success response
 - `err(code, message, status)`: Returns JSON error response
-- `get_s3_url(key)`: Returns S3 URL reference string
 
 ### Upload Flow
 
@@ -195,19 +238,29 @@ Test the API using curl or your preferred HTTP client:
 
 ```bash
 # Health check
-curl http://localhost:8000/health
+curl http://localhost/health
+# Or locally: curl http://localhost:8000/health
 
-# Get API key
-curl -X POST http://localhost:8000/api/v1/dev/issue-key
+# Register a new user
+curl -X POST http://localhost/api/v1/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "testuser", "password": "testpass"}'
 
-# List images (use API key from above)
-curl -X GET http://localhost:8000/api/v1/me/images \
+# Login
+curl -X POST http://localhost/api/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "testuser", "password": "testpass"}'
+
+# List images (use API key from register/login)
+curl -X GET http://localhost/api/v1/me/images \
   -H "X-API-Key: YOUR_API_KEY"
 ```
 
+**Note:** Replace `localhost` with your server IP in production. Port 80 is used (no port number needed) when Nginx is configured.
+
 ## Security Considerations
 
-1. **API Keys**: Currently issued without user authentication. In production, implement proper user registration/login.
+1. **API Keys**: User registration and login are implemented. API keys are issued after successful registration/login.
 
 2. **Image Access**: All images are currently publicly accessible. Consider implementing:
    - Private image flag enforcement
@@ -287,17 +340,39 @@ def complete_upload():
 ## Dependencies
 
 - `flask`: Web framework
+- `gunicorn`: WSGI HTTP server for production
 - `redis`: Redis client
 - `boto3`: AWS SDK for Python
 - `python-dotenv`: Environment variable management
 - `itsdangerous`: Secure token signing
+- `pytest`: Testing framework
+- `requests`: HTTP library (for CLI)
 
 See `requirements.txt` for specific versions.
 
+## Deployment
+
+The application uses a layered deployment approach:
+
+1. **Nginx** (port 80): Reverse proxy that forwards requests to Gunicorn
+2. **Gunicorn** (port 8000): WSGI server running the Flask application
+3. **Redis**: Metadata storage (runs as daemon)
+4. **AWS S3**: Image file storage
+
+Use `./deploy.sh` to automatically set up and start all components. Use `./down.sh` to stop all services.
+
 ## Version History
+
+- **v2.0** - Current version
+  - Service layer architecture (separation of concerns)
+  - User registration and login
+  - Nginx reverse proxy setup
+  - Infrastructure layer abstraction
+  - CLI tool for API interaction
+  - Comprehensive test suite
 
 - **v1.0** - Initial release
   - Basic upload/download functionality
-  - API key authentication
+  - Dev API key issuance
   - Image gallery
   - Image deletion

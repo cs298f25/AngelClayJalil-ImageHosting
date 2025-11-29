@@ -3,33 +3,78 @@
 ## Base URL
 All API endpoints are prefixed with `/api/v1/`.
 
+**Production:** `http://your-server-ip` (port 80, no port number needed)  
+**Local Development:** `http://localhost:8000`
+
 ## Authentication
 Most endpoints require authentication via an API key. Include your API key in the request header:
 ```
 X-API-Key: <your_api_key>
 ```
 
+API keys are obtained through user registration or login (see Authentication endpoints below).
+
 ## Endpoints
 
-### Development
+### Authentication
 
-#### Issue API Key
+#### Register User
 Create a new user account and receive an API key.
 
-**Endpoint:** `POST /api/v1/dev/issue-key`
+**Endpoint:** `POST /api/v1/register`
 
 **Authentication:** None required
+
+**Request Body:**
+```json
+{
+  "username": "myusername",
+  "password": "mypassword"
+}
+```
 
 **Response:**
 ```json
 {
   "api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "uid": "u_user_abc12345"
+  "username": "myusername"
 }
 ```
 
 **Status Codes:**
-- `200 OK`: API key issued successfully
+- `200 OK`: User registered successfully
+- `400 Bad Request`: Missing username or password
+- `409 Conflict`: Username already exists
+
+---
+
+#### Login
+Authenticate with existing credentials and receive an API key.
+
+**Endpoint:** `POST /api/v1/login`
+
+**Authentication:** None required
+
+**Request Body:**
+```json
+{
+  "username": "myusername",
+  "password": "mypassword"
+}
+```
+
+**Response:**
+```json
+{
+  "api_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "username": "myusername"
+}
+```
+
+**Status Codes:**
+- `200 OK`: Login successful
+- `400 Bad Request`: Missing username or password
+- `401 Unauthorized`: Invalid username or password
 
 ---
 
@@ -254,12 +299,15 @@ All error responses follow this format:
 ```
 
 **Common Error Codes:**
-- `auth`: Authentication failed (invalid API key)
+- `auth`: Authentication failed (invalid API key or credentials)
 - `validation`: Request validation failed (missing/invalid fields)
+- `conflict`: Resource conflict (e.g., username already exists)
 - `not_found`: Resource not found
 - `invalid_record`: Database record is corrupt
 - `s3_error`: AWS S3 operation failed
 - `redis_unreachable`: Redis connection failed
+- `service_error`: Service layer error
+- `save_error`: Failed to save data
 
 ---
 
@@ -267,14 +315,22 @@ All error responses follow this format:
 
 Complete workflow for uploading an image:
 
-1. **Issue API Key** (one-time setup):
+1. **Register or Login** (one-time setup):
    ```bash
-   curl -X POST http://localhost:8000/api/v1/dev/issue-key
+   # Register a new user
+   curl -X POST http://localhost/api/v1/register \
+     -H "Content-Type: application/json" \
+     -d '{"username": "myuser", "password": "mypass"}'
+   
+   # Or login with existing credentials
+   curl -X POST http://localhost/api/v1/login \
+     -H "Content-Type: application/json" \
+     -d '{"username": "myuser", "password": "mypass"}'
    ```
 
 2. **Request Upload URL**:
    ```bash
-   curl -X POST http://localhost:8000/api/v1/upload/request \
+   curl -X POST http://localhost/api/v1/upload/request \
      -H "X-API-Key: YOUR_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{"filename": "photo.jpg", "mime_type": "image/jpeg"}'
@@ -289,7 +345,7 @@ Complete workflow for uploading an image:
 
 4. **Complete Upload**:
    ```bash
-   curl -X POST http://localhost:8000/api/v1/upload/complete \
+   curl -X POST http://localhost/api/v1/upload/complete \
      -H "X-API-Key: YOUR_API_KEY" \
      -H "Content-Type: application/json" \
      -d '{
@@ -302,5 +358,7 @@ Complete workflow for uploading an image:
 
 5. **View Image**:
    ```bash
-   curl -L http://localhost:8000/api/v1/image/IMG_ID
+   curl -L http://localhost/api/v1/image/IMG_ID
    ```
+
+**Note:** Replace `localhost` with your server IP in production. Port 80 is used (no port number needed) when Nginx is configured. For local development, use `http://localhost:8000`.
