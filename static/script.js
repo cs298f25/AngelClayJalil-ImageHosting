@@ -4,7 +4,7 @@
  */
 
 const API_KEY_STORAGE = 'imagehost_api_key';
-let filesToUpload = []; // This is our "Staging Area"
+let filesToUpload = []; // Staging Area
 let currentModalImage = null;
 
 // Helper to make API calls
@@ -28,6 +28,8 @@ async function apiFetch(endpoint, options = {}, attempt = 0) {
   if (response.status === 401 && attempt === 0) {
     console.warn('API key rejected, getting a new one...');
     localStorage.removeItem(API_KEY_STORAGE);
+    // Note: If using username/password, we might not want to auto-issue a new key
+    // but redirect to login. For now, we fall back to anonymous key.
     await initApiKey({ force: true });
     return apiFetch(endpoint, options, attempt + 1);
   }
@@ -60,7 +62,8 @@ async function initApiKey({ force = false } = {}) {
     localStorage.removeItem(API_KEY_STORAGE);
   }
 
-  console.log('No API key found, issuing a new one...');
+  // Only issue anonymous key if we aren't trying to login
+  console.log('No API key found, issuing a new anonymous one...');
   try {
     const data = await apiFetch('/api/v1/dev/issue-key', {
       method: 'POST',
@@ -70,7 +73,7 @@ async function initApiKey({ force = false } = {}) {
       throw new Error("Server didn't return an API key.");
     }
     localStorage.setItem(API_KEY_STORAGE, data.api_key);
-    console.log('New dev key issued and stored');
+    console.log('New anonymous key issued');
     return data.api_key;
   } catch (error) {
     console.error('Failed to issue dev key:', error);
@@ -178,7 +181,7 @@ async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl, pr
         body: { iid, key, filename: file.name, mime_type: file.type },
       });
       
-      // --- UPDATE: Pass the file object so we can show a thumbnail ---
+      // Pass file for thumbnail generation
       addLinkToResults(url, linksListEl, file);
       
       filesUploaded++;
@@ -227,20 +230,19 @@ async function refreshGallery(gridEl) {
   }
 }
 
-// 6. UI Helpers (UPDATED FOR THUMBNAILS)
+// 6. UI Helpers (With Thumbnails)
 function addLinkToResults(url, listEl, file) {
   const item = document.createElement('li');
   item.className = 'link-item';
   const fullUrl = resolveUrl(url);
   
-  // --- Create Thumbnail ---
+  // Thumbnail
   const img = document.createElement('img');
   img.className = 'link-thumb';
-  img.src = URL.createObjectURL(file); // Use the local file for instant preview
+  img.src = URL.createObjectURL(file); 
   img.alt = file.name;
   
-  // --- Create Input & Button container ---
-  // We use HTML string for the inputs, but append the image via JS
+  // Controls
   const controlsDiv = document.createElement('div');
   controlsDiv.style.flex = '1';
   controlsDiv.style.display = 'flex';
@@ -251,11 +253,9 @@ function addLinkToResults(url, listEl, file) {
     <button class="button copy-btn">Copy</button>
   `;
 
-  // Append elements
   item.appendChild(img);
   item.appendChild(controlsDiv);
   
-  // Add Copy Logic
   controlsDiv.querySelector('.copy-btn').addEventListener('click', (e) => {
     const button = e.target;
     const input = controlsDiv.querySelector('.link-url');
@@ -275,7 +275,7 @@ function addLinkToResults(url, listEl, file) {
   listEl.prepend(item);
 }
 
-// 7. Function to show the image modal
+// 7. Image Modal
 function showImageModal(item) {
   const modal = document.getElementById('image-modal');
   const modalImg = document.getElementById('modal-img');
@@ -319,7 +319,7 @@ function closeModal() {
   currentModalImage = null; 
 }
 
-// --- Main execution ---
+// --- MAIN INIT ---
 document.addEventListener('DOMContentLoaded', () => {
   const dropzone = document.getElementById('dropzone');
   const fileInput = document.getElementById('file-input');
@@ -329,6 +329,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const linksList = document.getElementById('links-list');
   const galleryGrid = document.getElementById('gallery-grid');
   const refreshBtn = document.getElementById('refresh-gallery');
+  
   const modal = document.getElementById('image-modal');
   const modalCloseBtn = document.getElementById('modal-close-btn');
   const modalCopyBtn = document.getElementById('modal-copy-btn');
@@ -338,19 +339,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (!dropzone) return;
 
+  // Setup Uploads
   setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer);
-  
   uploadBtn.addEventListener('click', () =>
     handleUpload(uploadBtn, progressBar, uploadResults, linksList, previewContainer)
   );
   
   refreshBtn.addEventListener('click', () => refreshGallery(galleryGrid));
 
+  // Setup Image Modal
   modalCloseBtn.addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => {
     if (e.target === modal) closeModal();
   });
-
   modalCopyBtn.addEventListener('click', (e) => {
     e.target.textContent = 'Copied!';
     modalLinkInput.focus();
@@ -358,10 +359,115 @@ document.addEventListener('DOMContentLoaded', () => {
     try { document.execCommand('copy'); } catch (err) {}
     setTimeout(() => { e.target.textContent = 'Copy'; }, 2000);
   });
-  
   modalDeleteBtn.addEventListener('click', handleDeleteImage);
 
-  initApiKey().then(() => {
-    refreshGallery(galleryGrid);
+  // --- AUTH UI LOGIC ---
+  const loginModal = document.getElementById('login-modal');
+  const showLoginBtn = document.getElementById('show-login-btn');
+  const logoutBtn = document.getElementById('logout-btn');
+  const usernameInput = document.getElementById('username-input');
+  const passwordInput = document.getElementById('password-input');
+  const actionBtn = document.getElementById('auth-action-btn');
+  const toggleLink = document.getElementById('toggle-auth-mode');
+  const modalTitle = document.getElementById('modal-title');
+  const currentUserDisplay = document.getElementById('current-user-display');
+
+  let isRegisterMode = false;
+
+  showLoginBtn.addEventListener('click', () => {
+    loginModal.style.display = 'flex';
+    usernameInput.focus();
   });
+
+  loginModal.addEventListener('click', (e) => {
+    if(e.target === loginModal) loginModal.style.display = 'none';
+  });
+
+  toggleLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    isRegisterMode = !isRegisterMode;
+    if (isRegisterMode) {
+      modalTitle.textContent = "Create Account";
+      actionBtn.textContent = "Register";
+      document.getElementById('toggle-text').textContent = "Already have an account? ";
+      toggleLink.textContent = "Login";
+    } else {
+      modalTitle.textContent = "Login";
+      actionBtn.textContent = "Login";
+      document.getElementById('toggle-text').textContent = "New here? ";
+      toggleLink.textContent = "Create an account";
+    }
+  });
+
+  actionBtn.addEventListener('click', async () => {
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value.trim();
+    if (!username || !password) return alert("Please fill in all fields");
+
+    const endpoint = isRegisterMode ? '/api/v1/register' : '/api/v1/login';
+    
+    try {
+      actionBtn.disabled = true;
+      actionBtn.textContent = "Processing...";
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error?.message || "Auth failed");
+
+      const payload = data.data ? data.data : data;
+
+      // SUCCESS
+      localStorage.setItem(API_KEY_STORAGE, payload.api_key);
+      localStorage.setItem("imagehost_username", payload.username);
+
+      loginModal.style.display = 'none';
+      usernameInput.value = '';
+      passwordInput.value = '';
+      actionBtn.disabled = false;
+      
+      await refreshGallery(galleryGrid);
+      updateUserDisplay();
+      
+    } catch (error) {
+      alert(error.message);
+      actionBtn.disabled = false;
+      actionBtn.textContent = isRegisterMode ? "Register" : "Login";
+    }
+  });
+
+  logoutBtn.addEventListener('click', () => {
+    localStorage.removeItem(API_KEY_STORAGE);
+    localStorage.removeItem("imagehost_username");
+    location.reload(); 
+  });
+
+  function updateUserDisplay() {
+    const username = localStorage.getItem("imagehost_username");
+    if (username) {
+      currentUserDisplay.textContent = `Hi, ${username}`;
+      showLoginBtn.style.display = 'none';
+      logoutBtn.style.display = 'inline-block';
+    } else {
+      currentUserDisplay.textContent = '';
+      showLoginBtn.style.display = 'inline-block';
+      logoutBtn.style.display = 'none';
+    }
+  }
+
+  // Final Init
+  const existingKey = localStorage.getItem(API_KEY_STORAGE);
+  if (existingKey) {
+    updateUserDisplay();
+    refreshGallery(galleryGrid);
+  } else {
+    // If no user, maybe try to init anonymous key
+    initApiKey().then(() => {
+        refreshGallery(galleryGrid);
+    });
+  }
 });

@@ -54,26 +54,68 @@ class Utils:
         return f"{safe_name}{safe_ext}"
 
 
+from werkzeug.security import generate_password_hash, check_password_hash
+
+# ... existing imports ...
+
 class AuthService:
-    """
-    Handles anything related to creating or managing user identities.
-    The Flask app should NOT be talking to Redis directly.
-    """
-
     @staticmethod
-    def create_new_user():
-        """Generate a new user ID and save it into Redis."""
-        username = f"user_{uuid.uuid4().hex[:8]}"
-        uid = f"u_{username}"
+    def register_user(username, password):
+        """
+        Creates a new user with a password.
+        1. Check if username exists.
+        2. Create UID.
+        3. Save username->uid mapping.
+        4. Save user data with hashed password.
+        """
+        # 1. Check if username is taken (we use a simple redis key for this)
+        if redis_client._r.exists(f"username:{username}"):
+            return {"error": "Username already exists"}
 
-        # This uses our redis client class, not raw redis
-        redis_client.create_user(uid, username, now())
+        uid = f"u_{uuid.uuid4().hex[:8]}"
+        password_hash = generate_password_hash(password)
 
-        return {
+        # 2. Transaction to save everything
+        pipe = redis_client._r.pipeline()
+        
+        # Save the lookup index: username -> uid
+        pipe.set(f"username:{username}", uid)
+        
+        # Save the user data
+        pipe.hset(f"user:{uid}", mapping={
             "uid": uid,
             "username": username,
-        }
+            "password_hash": password_hash,
+            "created_at": now()
+        })
+        
+        pipe.execute()
 
+        return {"uid": uid, "username": username}
+
+    @staticmethod
+    def login_user(username, password):
+        """
+        Verifies password and returns the user's UID (which we turn into an API Key).
+        """
+        # 1. Lookup UID from username
+        uid = redis_client._r.get(f"username:{username}")
+        if not uid:
+            return None # User not found
+
+        # 2. Get the password hash
+        user_data = redis_client.get_image(uid.replace("u_", "user:")) # reusing get_image helper which is basically hgetall
+        # Or better, just use raw redis here since get_image expects img: prefix
+        user_data = redis_client._r.hgetall(f"user:{uid}")
+        
+        if not user_data or "password_hash" not in user_data:
+            return None
+
+        # 3. Verify password
+        if check_password_hash(user_data["password_hash"], password):
+            return {"uid": uid, "username": username}
+        
+        return None
 
 class ImageService:
     """

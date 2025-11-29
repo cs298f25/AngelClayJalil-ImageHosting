@@ -94,20 +94,36 @@ def api_request(method: str, path: str, json_body=None, use_auth: bool = True):
 # Commands
 # -----------------------
 def cmd_login(args):
-    print("[info] requesting dev API key...")
-    data = api_request("POST", "/api/v1/dev/issue-key", use_auth=False)
+    print("--- ImageHost Login ---")
+    username = input("Username: ").strip()
+    
+    # Check if they want to register or login
+    mode = input("Do you have an account? [y/n]: ").lower()
+    
+    import getpass
+    password = getpass.getpass("Password: ")
 
-    # Accept both shapes: {"api_key": ..., "uid": ...} OR nested under data
+    if mode == 'n':
+        print(f"[info] Registering new user '{username}'...")
+        endpoint = "/api/v1/register"
+    else:
+        print(f"[info] Logging in as '{username}'...")
+        endpoint = "/api/v1/login"
+
+    payload = {"username": username, "password": password}
+    
+    # We use use_auth=False because we don't have a key yet
+    data = api_request("POST", endpoint, json_body=payload, use_auth=False)
+
     try:
         api_key = data["api_key"]
-        uid = data["uid"]
     except Exception:
-        print("[error] login response did not contain api_key/uid:")
+        print("[error] Response missing api_key")
         print(json.dumps(data, indent=2))
         sys.exit(1)
 
     save_api_key(api_key)
-    print(f"[ok] got key for user {uid}")
+    print(f"[ok] Login successful! Key saved.")
 
 
 def cmd_upload(args):

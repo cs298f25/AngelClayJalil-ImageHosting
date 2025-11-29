@@ -44,14 +44,40 @@ def redis_check():
         return err("redis_unreachable", str(e), 500)
 
 # --- Auth Routes ---
-@app.post("/api/v1/dev/issue-key")
-def issue_key():
-    # App asks Service to create user
-    user_data = AuthService.create_new_user()
+# --- Auth Routes ---
+
+@app.post("/api/v1/register")
+def register():
+    data = request.json or {}
+    username = data.get("username")
+    password = data.get("password")
     
-    # App handles the delivery-specific logic (creating the token)
-    token = signer.dumps({"uid": user_data["uid"]})
-    return ok({"api_key": token, "uid": user_data["uid"]})
+    if not username or not password:
+        return err("validation", "Username and password required", 400)
+        
+    result = AuthService.register_user(username, password)
+    if "error" in result:
+        return err("conflict", result["error"], 409)
+        
+    # Generate token immediately so they are logged in
+    token = signer.dumps({"uid": result["uid"]})
+    return ok({"api_key": token, "username": username})
+
+@app.post("/api/v1/login")
+def login():
+    data = request.json or {}
+    username = data.get("username")
+    password = data.get("password")
+    
+    if not username or not password:
+        return err("validation", "Username and password required", 400)
+        
+    user = AuthService.login_user(username, password)
+    if not user:
+        return err("auth", "Invalid username or password", 401)
+        
+    token = signer.dumps({"uid": user["uid"]})
+    return ok({"api_key": token, "username": user["username"]})
 
 # --- S3 Upload Routes ---
 
