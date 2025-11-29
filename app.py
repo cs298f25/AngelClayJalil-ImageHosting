@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, request, render_template, redirect
 from itsdangerous import URLSafeSerializer
 from services import AuthService, ImageService
-from infrastructure import redis_client # Only imported for the health check route
+from services import redis_client
 
 # --- Setup ---
 load_dotenv()
@@ -39,7 +39,7 @@ def health_check():
 @app.get("/redis-check")
 def redis_check():
     try:
-        return ok({"redis": bool(redis_client.redis())})
+        return ok({"redis": bool(redis_client.ping())})
     except Exception as e:
         return err("redis_unreachable", str(e), 500)
 
