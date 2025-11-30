@@ -1,95 +1,221 @@
-/*
- * ImageHost Frontend Script
- * Connects the HTML UI to the Flask backend (S3 private).
- */
+/* ImageHost Frontend Script */
 
 const API_KEY_STORAGE = 'imagehost_api_key';
-let filesToUpload = []; // Staging Area
+const USERNAME_STORAGE = 'imagehost_username';
+
+let filesToUpload = [];
 let currentModalImage = null;
 
-// Helper to make API calls
-async function apiFetch(endpoint, options = {}, attempt = 0) {
-  const requestOptions = { ...options };
-  const headers = {
-    'X-API-Key': localStorage.getItem(API_KEY_STORAGE) || '',
-    ...(requestOptions.headers || {}),
-  };
-  const isFormData = requestOptions.body instanceof FormData;
-  if (!isFormData) {
-    headers['Content-Type'] = 'application/json';
-  }
-  requestOptions.headers = headers;
-  if (!isFormData && requestOptions.body) {
-    requestOptions.body = JSON.stringify(requestOptions.body);
-  }
+// --- DOM ELEMENTS ---
+// Views
+const guestView = document.getElementById('guest-view');
+const dashboardView = document.getElementById('dashboard-view');
 
-  const response = await fetch(endpoint, requestOptions);
+// Auth UI
+const authBtn = document.getElementById('auth-btn');
+const currentUserDisplay = document.getElementById('current-user-display');
+const authModal = document.getElementById('auth-modal');
+const authCloseBtn = document.getElementById('auth-close-btn');
+const usernameInput = document.getElementById('username-input');
+const passwordInput = document.getElementById('password-input');
+const authSubmitBtn = document.getElementById('auth-submit-btn');
+const authToggleLink = document.getElementById('auth-toggle-link');
+const guestDropzone = document.getElementById('guest-dropzone');
 
-  if (response.status === 401 && attempt === 0) {
-    console.warn('API key rejected, getting a new one...');
-    localStorage.removeItem(API_KEY_STORAGE);
-    // Note: If using username/password, we might not want to auto-issue a new key
-    // but redirect to login. For now, we fall back to anonymous key.
-    await initApiKey({ force: true });
-    return apiFetch(endpoint, options, attempt + 1);
-  }
+// App UI
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('file-input');
+const uploadBtn = document.getElementById('upload-btn');
+const progressBar = document.querySelector('.progress');
+const progressBarFill = document.getElementById('progress-bar');
+const uploadResults = document.getElementById('upload-results');
+const previewContainer = document.getElementById('file-previews');
+const galleryGrid = document.getElementById('gallery-grid');
+const refreshBtn = document.getElementById('refresh-gallery');
 
-  if (!response.ok) {
-    let errorMessage;
-    try {
-      const err = await response.json();
-      errorMessage = err.error?.message || 'API request failed';
-    } catch (e) {
-      errorMessage = `Server error: ${response.status} ${response.statusText}`;
-    }
-    throw new Error(errorMessage);
+// Image Modal
+const imgModal = document.getElementById('image-modal');
+const imgModalClose = document.getElementById('modal-close-btn');
+const imgModalImg = document.getElementById('modal-img');
+const imgModalLink = document.getElementById('modal-link-input');
+const imgModalCopy = document.getElementById('modal-copy-btn');
+const imgModalDelete = document.getElementById('modal-delete-btn');
+
+// State
+let isRegisterMode = false;
+
+// --- INIT ---
+document.addEventListener('DOMContentLoaded', () => {
+  checkLoginState();
+  setupEventListeners();
+});
+
+function checkLoginState() {
+  const key = localStorage.getItem(API_KEY_STORAGE);
+  const username = localStorage.getItem(USERNAME_STORAGE);
+
+  if (key && username) {
+    // Logged In
+    guestView.classList.add('hidden');
+    dashboardView.classList.remove('hidden');
+    
+    authBtn.textContent = 'Logout';
+    authBtn.classList.remove('primary');
+    authBtn.classList.add('ghost');
+    
+    currentUserDisplay.textContent = `Hi, ${username}`;
+    
+    // Load data
+    refreshGallery();
+  } else {
+    // Logged Out
+    guestView.classList.remove('hidden');
+    dashboardView.classList.add('hidden');
+    
+    authBtn.textContent = 'Login';
+    authBtn.classList.remove('ghost');
+    authBtn.classList.add('primary');
+    
+    currentUserDisplay.textContent = '';
   }
-  
-  const text = await response.text();
-  const json = text ? JSON.parse(text) : {};
-  return json.data ? json.data : json; 
 }
 
-// 1. Get or create a dev API key on load
-async function initApiKey({ force = false } = {}) {
-  let key = localStorage.getItem(API_KEY_STORAGE);
-  if (key && !force) {
-    console.log('Using existing API key');
-    return key;
-  }
+function setupEventListeners() {
+  // Auth Modal Toggling
+  authBtn.addEventListener('click', () => {
+    if (localStorage.getItem(API_KEY_STORAGE)) {
+      // Logic for Logout
+      if(confirm('Log out?')) {
+        localStorage.removeItem(API_KEY_STORAGE);
+        localStorage.removeItem(USERNAME_STORAGE);
+        checkLoginState();
+      }
+    } else {
+      // Logic for Login
+      openAuthModal(false);
+    }
+  });
 
-  if (force && key) {
-    localStorage.removeItem(API_KEY_STORAGE);
-  }
+  authCloseBtn.addEventListener('click', () => authModal.classList.remove('open'));
+  
+  // Guest Interaction
+  guestDropzone.addEventListener('click', () => openAuthModal(false));
+  guestDropzone.addEventListener('dragover', (e) => { e.preventDefault(); });
+  guestDropzone.addEventListener('drop', (e) => { 
+    e.preventDefault(); 
+    openAuthModal(false); 
+  });
 
-  // Only issue anonymous key if we aren't trying to login
-  console.log('No API key found, issuing a new anonymous one...');
+  // Auth Toggle (Login vs Register)
+  authToggleLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    isRegisterMode = !isRegisterMode;
+    updateAuthModalUI();
+  });
+
+  // Auth Submit
+  authSubmitBtn.addEventListener('click', handleAuthSubmit);
+
+  // File Handling
+  setupFileHandling();
+  
+  uploadBtn.addEventListener('click', handleUpload);
+  refreshBtn.addEventListener('click', refreshGallery);
+
+  // Image Modal
+  imgModalClose.addEventListener('click', () => imgModal.classList.remove('open'));
+  imgModal.addEventListener('click', (e) => {
+    if(e.target === imgModal) imgModal.classList.remove('open');
+  });
+  
+  imgModalCopy.addEventListener('click', () => {
+    imgModalLink.select();
+    document.execCommand('copy');
+    imgModalCopy.textContent = 'Copied!';
+    setTimeout(() => imgModalCopy.textContent = 'Copy', 2000);
+  });
+  
+  imgModalDelete.addEventListener('click', handleDeleteImage);
+}
+
+// --- AUTH LOGIC ---
+
+function openAuthModal(register = false) {
+  isRegisterMode = register;
+  updateAuthModalUI();
+  authModal.classList.add('open');
+  usernameInput.focus();
+}
+
+function updateAuthModalUI() {
+  const title = document.getElementById('auth-title');
+  const toggleText = document.getElementById('auth-toggle-text');
+  
+  if (isRegisterMode) {
+    title.textContent = 'Create Account';
+    authSubmitBtn.textContent = 'Register';
+    toggleText.textContent = 'Already have an account?';
+    authToggleLink.textContent = 'Login';
+  } else {
+    title.textContent = 'Welcome Back';
+    authSubmitBtn.textContent = 'Login';
+    toggleText.textContent = 'Need an account?';
+    authToggleLink.textContent = 'Register';
+  }
+}
+
+async function handleAuthSubmit() {
+  const username = usernameInput.value.trim();
+  const password = passwordInput.value.trim();
+  
+  if (!username || !password) return alert('Please fill in fields');
+
+  const endpoint = isRegisterMode ? '/api/v1/register' : '/api/v1/login';
+  
   try {
-    const data = await apiFetch('/api/v1/dev/issue-key', {
+    authSubmitBtn.disabled = true;
+    authSubmitBtn.textContent = 'Processing...';
+
+    const res = await fetch(endpoint, {
       method: 'POST',
-      body: {},
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
     });
-    if (!data.api_key) {
-      throw new Error("Server didn't return an API key.");
-    }
-    localStorage.setItem(API_KEY_STORAGE, data.api_key);
-    console.log('New anonymous key issued');
-    return data.api_key;
-  } catch (error) {
-    console.error('Failed to issue dev key:', error);
+    
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error?.message || 'Error');
+
+    const payload = data.data ? data.data : data;
+    
+    localStorage.setItem(API_KEY_STORAGE, payload.api_key);
+    localStorage.setItem(USERNAME_STORAGE, payload.username);
+    
+    authModal.classList.remove('open');
+    usernameInput.value = '';
+    passwordInput.value = '';
+    
+    checkLoginState();
+    
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    authSubmitBtn.disabled = false;
+    updateAuthModalUI();
   }
 }
 
-// 2. Handle file selection & Preview Generation
-function setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer) {
-  
-  function handleNewFiles(fileList) {
-    const incoming = Array.from(fileList);
-    filesToUpload = [...filesToUpload, ...incoming];
-    renderPreviews(previewContainer, uploadBtn);
-    fileInput.value = ''; 
+// --- UPLOAD LOGIC ---
+
+function setupFileHandling() {
+  function handleFiles(list) {
+    filesToUpload = [...filesToUpload, ...Array.from(list)];
+    renderPreviews();
+    fileInput.value = '';
   }
 
+  dropzone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+  
   dropzone.addEventListener('dragover', (e) => {
     e.preventDefault();
     dropzone.classList.add('drag-over');
@@ -98,376 +224,207 @@ function setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer) {
   dropzone.addEventListener('drop', (e) => {
     e.preventDefault();
     dropzone.classList.remove('drag-over');
-    handleNewFiles(e.dataTransfer.files);
+    handleFiles(e.dataTransfer.files);
   });
-
-  dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', () => handleNewFiles(fileInput.files));
 }
 
-// 3. Render the staging thumbnails
-function renderPreviews(container, uploadBtn) {
-  container.innerHTML = ''; 
-
+function renderPreviews() {
+  previewContainer.innerHTML = '';
+  filesToUpload.forEach((file, idx) => {
+    const div = document.createElement('div');
+    div.className = 'preview-item';
+    
+    const img = document.createElement('img');
+    img.src = URL.createObjectURL(file);
+    
+    const btn = document.createElement('button');
+    btn.className = 'preview-remove';
+    btn.innerHTML = '&times;';
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      filesToUpload.splice(idx, 1);
+      renderPreviews();
+    };
+    
+    div.appendChild(img);
+    div.appendChild(btn);
+    previewContainer.appendChild(div);
+  });
+  
   if (filesToUpload.length > 0) {
     uploadBtn.disabled = false;
-    uploadBtn.textContent = `Upload ${filesToUpload.length} Image(s)`;
+    uploadBtn.textContent = `Upload ${filesToUpload.length} Files`;
   } else {
     uploadBtn.disabled = true;
     uploadBtn.textContent = 'Upload Images';
   }
-
-  filesToUpload.forEach((file, index) => {
-    const item = document.createElement('div');
-    item.className = 'preview-item';
-
-    const img = document.createElement('img');
-    img.src = URL.createObjectURL(file);
-    img.alt = file.name;
-    img.onload = () => URL.revokeObjectURL(img.src);
-
-    const removeBtn = document.createElement('button');
-    removeBtn.className = 'preview-remove';
-    removeBtn.innerHTML = '&times;';
-    removeBtn.title = 'Remove image';
-    
-    removeBtn.addEventListener('click', (e) => {
-      e.stopPropagation(); 
-      filesToUpload.splice(index, 1); 
-      renderPreviews(container, uploadBtn); 
-    });
-
-    item.appendChild(img);
-    item.appendChild(removeBtn);
-    container.appendChild(item);
-  });
 }
 
-function resolveUrl(url) {
-  if (!url) return '';
-  return url.startsWith('http') ? url : `${window.location.origin}${url}`;
-}
-
-// 4. Handle the S3 upload process
-async function handleUpload(uploadBtn, progressBarEl, resultsEl, linksListEl, previewContainer) {
+async function handleUpload() {
   if (filesToUpload.length === 0) return;
-
-  uploadBtn.disabled = true;
-  progressBarEl.parentElement.classList.add('active');
-  resultsEl.hidden = true;
-  linksListEl.innerHTML = '';
   
-  const totalFiles = filesToUpload.length;
-  let filesUploaded = 0;
-
+  uploadBtn.disabled = true;
+  progressBar.classList.add('active');
+  uploadResults.classList.add('hidden');
+  uploadResults.innerHTML = '';
+  
+  let completed = 0;
+  
   for (const file of filesToUpload) {
     try {
-      const { presigned_url, iid, key } = await apiFetch('/api/v1/upload/request', {
+      // 1. Get Presigned URL
+      const reqRes = await apiFetch('/api/v1/upload/request', {
         method: 'POST',
-        body: { filename: file.name, mime_type: file.type },
+        body: { filename: file.name, mime_type: file.type }
       });
-      const s3Response = await fetch(presigned_url, {
+      
+      // 2. Upload to S3
+      await fetch(reqRes.presigned_url, {
         method: 'PUT',
         body: file,
-        headers: {
-          'Content-Type': file.type,
-        },
+        headers: { 'Content-Type': file.type }
       });
-      if (!s3Response.ok) {
-        throw new Error('S3 upload failed');
-      }
-      const { url } = await apiFetch('/api/v1/upload/complete', {
+      
+      // 3. Finalize
+      const finalRes = await apiFetch('/api/v1/upload/complete', {
         method: 'POST',
-        body: { iid, key, filename: file.name, mime_type: file.type },
+        body: { 
+          iid: reqRes.iid, 
+          key: reqRes.key, 
+          filename: file.name, 
+          mime_type: file.type 
+        }
       });
       
-      // Pass file for thumbnail generation
-      addLinkToResults(url, linksListEl, file);
+      addResultLink(finalRes.url, file);
+      completed++;
+      progressBarFill.style.width = `${(completed / filesToUpload.length) * 100}%`;
       
-      filesUploaded++;
-      progressBarEl.style.width = `${(filesUploaded / totalFiles) * 100}%`;
-    } catch (error) {
-      console.error('Failed to upload file:', file.name, error);
+    } catch (err) {
+      console.error(err);
     }
   }
-
-  uploadBtn.disabled = false;
-  uploadBtn.textContent = 'Upload Images';
-  resultsEl.hidden = false;
   
   filesToUpload = [];
-  renderPreviews(previewContainer, uploadBtn);
+  renderPreviews();
+  uploadResults.classList.remove('hidden');
   
-  console.log('All uploads complete');
   setTimeout(() => {
-    document.getElementById('refresh-gallery').click();
-    progressBarEl.parentElement.classList.remove('active');
-    progressBarEl.style.width = '0%';
+    progressBar.classList.remove('active');
+    progressBarFill.style.width = '0';
+    refreshGallery();
   }, 1000);
 }
 
-// 5. Handle refreshing the gallery
-async function refreshGallery(gridEl) {
-  gridEl.innerHTML = '<p class="grid-item-placeholder">Loading...</p>';
-  try {
-    const { items } = await apiFetch('/api/v1/me/images');
-    gridEl.innerHTML = '';
-    if (!items || items.length === 0) {
-      gridEl.innerHTML = '<p class="grid-item-placeholder">No images uploaded yet.</p>';
-      return;
-    }
-    items.forEach((item) => {
-      const el = document.createElement('div');
-      el.className = 'grid-item';
-      const viewUrl = resolveUrl(item.url);
-      el.innerHTML = `<img src="${viewUrl}" alt="${item.filename}" loading="lazy">`;
-      el.addEventListener('click', () => showImageModal(item));
-      gridEl.appendChild(el);
-    });
-  } catch (error) {
-    console.error('Failed to refresh gallery:', error);
-    gridEl.innerHTML = '<p class="grid-item-placeholder" style="color: red;">Failed to load images.</p>';
-  }
-}
-
-// 6. UI Helpers (With Thumbnails)
-function addLinkToResults(url, listEl, file) {
-  const item = document.createElement('li');
-  item.className = 'link-item';
-  const fullUrl = resolveUrl(url);
+function addResultLink(url, file) {
+  const fullUrl = url.startsWith('http') ? url : window.location.origin + url;
+  const div = document.createElement('div');
+  div.className = 'link-item';
   
-  // Thumbnail
   const img = document.createElement('img');
   img.className = 'link-thumb';
-  img.src = URL.createObjectURL(file); 
-  img.alt = file.name;
+  img.src = URL.createObjectURL(file);
   
-  // Controls
-  const controlsDiv = document.createElement('div');
-  controlsDiv.style.flex = '1';
-  controlsDiv.style.display = 'flex';
-  controlsDiv.style.gap = '0.5rem';
+  const input = document.createElement('input');
+  input.className = 'link-url';
+  input.readOnly = true;
+  input.value = fullUrl;
   
-  controlsDiv.innerHTML = `
-    <input class="link-url" type="text" value="${fullUrl}" readonly style="width: 100%">
-    <button class="button copy-btn">Copy</button>
-  `;
-
-  item.appendChild(img);
-  item.appendChild(controlsDiv);
-  
-  controlsDiv.querySelector('.copy-btn').addEventListener('click', (e) => {
-    const button = e.target;
-    const input = controlsDiv.querySelector('.link-url');
-    button.textContent = 'Copied!';
-    input.focus();
+  const btn = document.createElement('button');
+  btn.className = 'button ghost';
+  btn.textContent = 'Copy';
+  btn.onclick = () => {
     input.select();
-    try {
-      document.execCommand('copy');
-    } catch (err) {
-      console.error('Fallback: Oops, unable to copy', err);
+    document.execCommand('copy');
+    btn.textContent = 'Copied!';
+    setTimeout(() => btn.textContent = 'Copy', 1500);
+  };
+  
+  div.appendChild(img);
+  div.appendChild(input);
+  div.appendChild(btn);
+  uploadResults.prepend(div);
+}
+
+// --- GALLERY ---
+
+async function refreshGallery() {
+  galleryGrid.innerHTML = '<div class="grid-item-placeholder">Loading...</div>';
+  try {
+    const data = await apiFetch('/api/v1/me/images');
+    galleryGrid.innerHTML = '';
+    
+    if (!data.items || data.items.length === 0) {
+      galleryGrid.innerHTML = '<div class="grid-item-placeholder">No images yet. Upload some!</div>';
+      return;
     }
-    setTimeout(() => {
-      button.textContent = 'Copy';
-    }, 2000);
-  });
-  
-  listEl.prepend(item);
-}
-
-// 7. Image Modal
-function showImageModal(item) {
-  const modal = document.getElementById('image-modal');
-  const modalImg = document.getElementById('modal-img');
-  const modalLinkInput = document.getElementById('modal-link-input');
-  
-  currentModalImage = item; 
-  
-  modalImg.src = resolveUrl(item.url);
-  modalImg.alt = item.filename;
-  modalLinkInput.value = resolveUrl(item.url);
-  
-  modal.style.display = 'flex';
-}
-
-// 8. Delete Image Logic
-async function handleDeleteImage() {
-  if (!currentModalImage) return; 
-  
-  const iid = currentModalImage.id;
-  const filename = currentModalImage.filename;
-
-  if (!confirm(`Are you sure you want to delete this image: ${filename}?`)) {
-    return;
+    
+    data.items.forEach(item => {
+      const div = document.createElement('div');
+      div.className = 'grid-item';
+      
+      const img = document.createElement('img');
+      const url = item.url.startsWith('http') ? item.url : window.location.origin + item.url;
+      img.src = url;
+      img.loading = 'lazy';
+      
+      div.onclick = () => openImageModal(item, url);
+      
+      div.appendChild(img);
+      galleryGrid.appendChild(div);
+    });
+    
+  } catch (err) {
+    galleryGrid.innerHTML = '<div class="grid-item-placeholder">Failed to load gallery.</div>';
   }
+}
+
+function openImageModal(item, url) {
+  currentModalImage = item;
+  imgModalImg.src = url;
+  imgModalLink.value = url;
+  imgModal.classList.add('open');
+}
+
+async function handleDeleteImage() {
+  if (!currentModalImage || !confirm('Delete this image?')) return;
   
   try {
-    await apiFetch(`/api/v1/image/${iid}`, {
-      method: 'DELETE',
-    });
-    closeModal(); 
-    document.getElementById('refresh-gallery').click(); 
-  } catch (error) {
-    console.error('Failed to delete image:', error);
-    alert(`Error: ${error.message}`);
+    await apiFetch(`/api/v1/image/${currentModalImage.id}`, { method: 'DELETE' });
+    imgModal.classList.remove('open');
+    refreshGallery();
+  } catch (err) {
+    alert('Failed to delete');
   }
 }
 
-function closeModal() {
-  const modal = document.getElementById('image-modal');
-  modal.style.display = 'none';
-  currentModalImage = null; 
-}
+// --- API HELPER ---
 
-// --- MAIN INIT ---
-document.addEventListener('DOMContentLoaded', () => {
-  const dropzone = document.getElementById('dropzone');
-  const fileInput = document.getElementById('file-input');
-  const uploadBtn = document.getElementById('upload-btn');
-  const progressBar = document.getElementById('progress-bar');
-  const uploadResults = document.getElementById('upload-results');
-  const linksList = document.getElementById('links-list');
-  const galleryGrid = document.getElementById('gallery-grid');
-  const refreshBtn = document.getElementById('refresh-gallery');
+async function apiFetch(endpoint, opts = {}) {
+  const key = localStorage.getItem(API_KEY_STORAGE);
+  if (!key) throw new Error('Not Logged In');
   
-  const modal = document.getElementById('image-modal');
-  const modalCloseBtn = document.getElementById('modal-close-btn');
-  const modalCopyBtn = document.getElementById('modal-copy-btn');
-  const modalLinkInput = document.getElementById('modal-link-input');
-  const modalDeleteBtn = document.getElementById('modal-delete-btn'); 
-  const previewContainer = document.getElementById('file-previews');
-
-  if (!dropzone) return;
-
-  // Setup Uploads
-  setupFileHandling(dropzone, fileInput, uploadBtn, previewContainer);
-  uploadBtn.addEventListener('click', () =>
-    handleUpload(uploadBtn, progressBar, uploadResults, linksList, previewContainer)
-  );
+  opts.headers = { 
+    ...opts.headers,
+    'X-API-Key': key,
+    'Content-Type': 'application/json'
+  };
   
-  refreshBtn.addEventListener('click', () => refreshGallery(galleryGrid));
-
-  // Setup Image Modal
-  modalCloseBtn.addEventListener('click', closeModal);
-  modal.addEventListener('click', (e) => {
-    if (e.target === modal) closeModal();
-  });
-  modalCopyBtn.addEventListener('click', (e) => {
-    e.target.textContent = 'Copied!';
-    modalLinkInput.focus();
-    modalLinkInput.select();
-    try { document.execCommand('copy'); } catch (err) {}
-    setTimeout(() => { e.target.textContent = 'Copy'; }, 2000);
-  });
-  modalDeleteBtn.addEventListener('click', handleDeleteImage);
-
-  // --- AUTH UI LOGIC ---
-  const loginModal = document.getElementById('login-modal');
-  const showLoginBtn = document.getElementById('show-login-btn');
-  const logoutBtn = document.getElementById('logout-btn');
-  const usernameInput = document.getElementById('username-input');
-  const passwordInput = document.getElementById('password-input');
-  const actionBtn = document.getElementById('auth-action-btn');
-  const toggleLink = document.getElementById('toggle-auth-mode');
-  const modalTitle = document.getElementById('modal-title');
-  const currentUserDisplay = document.getElementById('current-user-display');
-
-  let isRegisterMode = false;
-
-  showLoginBtn.addEventListener('click', () => {
-    loginModal.style.display = 'flex';
-    usernameInput.focus();
-  });
-
-  loginModal.addEventListener('click', (e) => {
-    if(e.target === loginModal) loginModal.style.display = 'none';
-  });
-
-  toggleLink.addEventListener('click', (e) => {
-    e.preventDefault();
-    isRegisterMode = !isRegisterMode;
-    if (isRegisterMode) {
-      modalTitle.textContent = "Create Account";
-      actionBtn.textContent = "Register";
-      document.getElementById('toggle-text').textContent = "Already have an account? ";
-      toggleLink.textContent = "Login";
-    } else {
-      modalTitle.textContent = "Login";
-      actionBtn.textContent = "Login";
-      document.getElementById('toggle-text').textContent = "New here? ";
-      toggleLink.textContent = "Create an account";
-    }
-  });
-
-  actionBtn.addEventListener('click', async () => {
-    const username = usernameInput.value.trim();
-    const password = passwordInput.value.trim();
-    if (!username || !password) return alert("Please fill in all fields");
-
-    const endpoint = isRegisterMode ? '/api/v1/register' : '/api/v1/login';
-    
-    try {
-      actionBtn.disabled = true;
-      actionBtn.textContent = "Processing...";
-
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error?.message || "Auth failed");
-
-      const payload = data.data ? data.data : data;
-
-      // SUCCESS
-      localStorage.setItem(API_KEY_STORAGE, payload.api_key);
-      localStorage.setItem("imagehost_username", payload.username);
-
-      loginModal.style.display = 'none';
-      usernameInput.value = '';
-      passwordInput.value = '';
-      actionBtn.disabled = false;
-      
-      await refreshGallery(galleryGrid);
-      updateUserDisplay();
-      
-    } catch (error) {
-      alert(error.message);
-      actionBtn.disabled = false;
-      actionBtn.textContent = isRegisterMode ? "Register" : "Login";
-    }
-  });
-
-  logoutBtn.addEventListener('click', () => {
+  if (opts.body && typeof opts.body !== 'string') {
+    opts.body = JSON.stringify(opts.body);
+  }
+  
+  const res = await fetch(endpoint, opts);
+  const json = await res.json();
+  
+  if (res.status === 401) {
     localStorage.removeItem(API_KEY_STORAGE);
-    localStorage.removeItem("imagehost_username");
-    location.reload(); 
-  });
-
-  function updateUserDisplay() {
-    const username = localStorage.getItem("imagehost_username");
-    if (username) {
-      currentUserDisplay.textContent = `Hi, ${username}`;
-      showLoginBtn.style.display = 'none';
-      logoutBtn.style.display = 'inline-block';
-    } else {
-      currentUserDisplay.textContent = '';
-      showLoginBtn.style.display = 'inline-block';
-      logoutBtn.style.display = 'none';
-    }
+    localStorage.removeItem(USERNAME_STORAGE);
+    checkLoginState();
+    throw new Error('Session Expired');
   }
-
-  // Final Init
-  const existingKey = localStorage.getItem(API_KEY_STORAGE);
-  if (existingKey) {
-    updateUserDisplay();
-    refreshGallery(galleryGrid);
-  } else {
-    // If no user, maybe try to init anonymous key
-    initApiKey().then(() => {
-        refreshGallery(galleryGrid);
-    });
-  }
-});
+  
+  if (!res.ok) throw new Error(json.error?.message || 'Error');
+  
+  return json.data ? json.data : json;
+}
