@@ -1,14 +1,6 @@
 #!/usr/bin/env python3
 """
-Tiny CLI helper for our Image Hosting project.
-
-It talks to the Flask API:
-- login: asks the server for a dev API key and saves it locally
-- upload: uploads an image via S3 presigned URL and finalizes it
-
-It supports BOTH response shapes:
-- {"data": {...}}    (new pattern)
-- {...}              (older pattern)
+CLI helper for our Image Hosting project.
 """
 
 import argparse
@@ -16,29 +8,31 @@ import json
 import mimetypes
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import requests
 
-KEY_PATH = Path.home() / ".imagehost_key"
+# Try imports for image processing
+try:
+    from PIL import Image
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HAS_IMAGE_TOOLS = True
+except ImportError:
+    HAS_IMAGE_TOOLS = False
 
+KEY_PATH = Path.home() / ".imagehost_key"
+ALLOWED_MIMES = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
 
 # Helpers
 # -----------------------
 def get_base_url() -> str:
-    """
-    Where the API lives.
-    On your Mac:
-      - local:  http://127.0.0.1:8000
-      - EC2:    http://34.204.188.204:8000
-    """
     return os.getenv("BASE_URL", "http://127.0.0.1:8000").rstrip("/")
-
 
 def save_api_key(api_key: str) -> None:
     KEY_PATH.write_text(api_key.strip(), encoding="utf-8")
     print(f"[ok] saved API key to {KEY_PATH}")
-
 
 def load_api_key() -> str:
     if not KEY_PATH.exists():
@@ -46,21 +40,12 @@ def load_api_key() -> str:
         sys.exit(1)
     return KEY_PATH.read_text(encoding="utf-8").strip()
 
-
 def api_request(method: str, path: str, json_body=None, use_auth: bool = True):
-    """
-    Basic HTTP wrapper.
-    It accepts BOTH:
-
-      { "data": {...} }
-      {...}
-    """
     url = get_base_url() + path
     headers = {}
 
     if use_auth:
-        api_key = load_api_key()
-        headers["X-API-Key"] = api_key
+        headers["X-API-Key"] = load_api_key()
 
     try:
         resp = requests.request(method, url, json=json_body, headers=headers)
@@ -76,121 +61,130 @@ def api_request(method: str, path: str, json_body=None, use_auth: bool = True):
             print(resp.text)
         sys.exit(1)
 
-    # Try to parse JSON and unwrap data if present
     try:
         body = resp.json()
     except Exception:
-        print("[error] server returned non-JSON response:")
-        print(resp.text)
+        return resp.text
+
+    return body.get("data", body) if isinstance(body, dict) else body
+
+# --- NEW: Image Processing Logic ---
+def process_file(file_path: Path):
+    """
+    Validates image type and converts HEIC to JPEG if needed.
+    Returns: (Path to file to upload, mime_type, needs_cleanup_bool)
+    """
+    if not HAS_IMAGE_TOOLS:
+        print("[warning] Pillow/pillow-heif not installed. Skipping strict validation and HEIC conversion.")
+        mime, _ = mimetypes.guess_type(str(file_path))
+        return file_path, mime or "application/octet-stream", False
+
+    # Check extension first
+    ext = file_path.suffix.lower()
+    
+    # 1. Handle HEIC Conversion
+    if ext in ['.heic', '.heif']:
+        print("[info] HEIC detected. Converting to JPEG for web compatibility...")
+        try:
+            img = Image.open(file_path)
+            # Create temp file
+            tmp = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False)
+            tmp.close()
+            
+            # Convert and save
+            img = img.convert("RGB")
+            img.save(tmp.name, "JPEG", quality=90)
+            
+            return Path(tmp.name), "image/jpeg", True
+        except Exception as e:
+            print(f"[error] Failed to convert HEIC: {e}")
+            sys.exit(1)
+
+    # 2. Validate standard images
+    try:
+        img = Image.open(file_path)
+        img.verify() # Checks file integrity
+        mime = Image.MIME.get(img.format)
+        
+        if mime not in ALLOWED_MIMES:
+            print(f"[error] Invalid image type: {mime}")
+            print(f"Allowed: {', '.join(ALLOWED_MIMES)}")
+            sys.exit(1)
+            
+        return file_path, mime, False
+    except Exception as e:
+        print(f"[error] Invalid file: {e}")
         sys.exit(1)
-
-    if isinstance(body, dict) and "data" in body:
-        return body["data"]
-    else:
-        # Older server style – just return whole JSON
-        return body
-
 
 # Commands
 # -----------------------
 def cmd_login(args):
     print("--- ImageHost Login ---")
     username = input("Username: ").strip()
-    
-    # Check if they want to register or login
     mode = input("Do you have an account? [y/n]: ").lower()
     
     import getpass
     password = getpass.getpass("Password: ")
 
-    if mode == 'n':
-        print(f"[info] Registering new user '{username}'...")
-        endpoint = "/api/v1/register"
-    else:
-        print(f"[info] Logging in as '{username}'...")
-        endpoint = "/api/v1/login"
-
+    endpoint = "/api/v1/register" if mode == 'n' else "/api/v1/login"
     payload = {"username": username, "password": password}
     
-    # We use use_auth=False because we don't have a key yet
     data = api_request("POST", endpoint, json_body=payload, use_auth=False)
 
     try:
-        api_key = data["api_key"]
+        save_api_key(data["api_key"])
+        print(f"[ok] Login successful! Key saved.")
     except Exception:
-        print("[error] Response missing api_key")
-        print(json.dumps(data, indent=2))
+        print("[error] Unexpected response")
         sys.exit(1)
-
-    save_api_key(api_key)
-    print(f"[ok] Login successful! Key saved.")
-
 
 def cmd_upload(args):
-    img_path = Path(args.path).expanduser()
-    if not img_path.is_file():
-        print(f"[error] file does not exist: {img_path}")
+    original_path = Path(args.path).expanduser()
+    if not original_path.is_file():
+        print(f"[error] file does not exist: {original_path}")
         sys.exit(1)
 
-    # Guess MIME type
-    mime_type, _ = mimetypes.guess_type(str(img_path))
-    if not mime_type:
-        mime_type = "application/octet-stream"
+    # Validate and/or Convert
+    upload_path, mime_type, needs_cleanup = process_file(original_path)
+    filename = upload_path.name
 
-    filename = img_path.name
-    print(f"[info] requesting upload URL for {filename} ({mime_type})...")
+    # If we converted HEIC, we want the filename to be original_name.jpg, not tempfile_name.jpg
+    if needs_cleanup:
+        filename = original_path.with_suffix('.jpg').name
 
-    # Step 1: ask API for presigned URL
-    payload = {
-        "filename": filename,
-        "mime_type": mime_type,
-    }
+    print(f"[info] Uploading {filename} ({mime_type})...")
+
+    # Step 1: Request URL
+    payload = {"filename": filename, "mime_type": mime_type}
     data = api_request("POST", "/api/v1/upload/request", json_body=payload, use_auth=True)
 
-    # Expect at least these fields
     try:
-        iid = data["iid"]
-        key = data["key"]
-        presigned_url = data["presigned_url"]
-    except Exception:
-        print("[error] upload request response missing fields:")
-        print(json.dumps(data, indent=2))
-        sys.exit(1)
+        # Step 2: Upload bytes
+        with upload_path.open("rb") as f:
+            put_resp = requests.put(
+                data["presigned_url"],
+                data=f,
+                headers={"Content-Type": mime_type},
+            )
+        
+        if not put_resp.ok:
+            print(f"[error] S3 Error: {put_resp.status_code}")
+            sys.exit(1)
 
-    # Step 2: actually upload the file bytes to S3
-    print("[info] uploading file bytes to S3 via presigned URL...")
-    with img_path.open("rb") as f:
-        put_resp = requests.put(
-            presigned_url,
-            data=f,
-            headers={"Content-Type": mime_type},
-        )
+        # Step 3: Finalize
+        final_payload = {
+            "iid": data["iid"],
+            "key": data["key"],
+            "filename": filename,
+            "mime_type": mime_type,
+        }
+        api_request("POST", "/api/v1/upload/complete", json_body=final_payload, use_auth=True)
+        print("[ok] Upload complete!")
 
-    if not put_resp.ok:
-        print(f"[error] S3 upload failed: HTTP {put_resp.status_code}")
-        print(put_resp.text)
-        sys.exit(1)
-
-    print("[ok] file uploaded to S3. Finalizing metadata with API...")
-
-    # Step 3: tell API we’re done so it can store metadata in Redis
-    complete_payload = {
-        "iid": iid,
-        "key": key,
-        "filename": filename,
-        "mime_type": mime_type,
-    }
-
-    final_data = api_request(
-        "POST",
-        "/api/v1/upload/complete",
-        json_body=complete_payload,
-        use_auth=True,
-    )
-
-    print("[ok] upload complete!")
-    print(json.dumps(final_data, indent=2))
-
+    finally:
+        # Clean up temp file if we created one
+        if needs_cleanup:
+            os.unlink(upload_path)
 
 # -----------------------
 # Argparse wiring
@@ -199,23 +193,18 @@ def build_parser():
     p = argparse.ArgumentParser(description="Image host CLI")
     sub = p.add_subparsers(dest="command", required=True)
 
-    # login
-    lp = sub.add_parser("login", help="request a dev API key")
+    lp = sub.add_parser("login", help="login or register")
     lp.set_defaults(func=cmd_login)
 
-    # upload
     up = sub.add_parser("upload", help="upload an image file")
     up.add_argument("path", help="path to an image file")
     up.set_defaults(func=cmd_upload)
 
     return p
 
-
 def main():
-    parser = build_parser()
-    args = parser.parse_args()
+    args = build_parser().parse_args()
     args.func(args)
-
 
 if __name__ == "__main__":
     main()

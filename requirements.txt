@@ -3,5 +3,7 @@ redis
 boto3
 python-dotenv
 gunicorn
-pytest
 requests
+pytest
+Pillow
+pillow-heif
