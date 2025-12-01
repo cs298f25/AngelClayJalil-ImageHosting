@@ -110,8 +110,6 @@ user:{uid}:images (sorted set)
    REDIS_URL=redis://localhost:6379/0
    AWS_REGION=us-east-1
    AWS_S3_BUCKET_NAME=your-bucket-name
-   AWS_ACCESS_KEY_ID=your-access-key
-   AWS_SECRET_ACCESS_KEY=your-secret-key
    FLASK_DEBUG=1
    ```
 
@@ -131,8 +129,6 @@ user:{uid}:images (sorted set)
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` |
 | `AWS_REGION` | AWS region for S3 | `us-east-1` |
 | `AWS_S3_BUCKET_NAME` | S3 bucket name | *Required* |
-| `AWS_ACCESS_KEY_ID` | AWS access key | *Required* |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key | *Required* |
 | `FLASK_DEBUG` | Enable Flask debug mode | `1` |
 
 **Note:** The application runs on port 8000 internally (Gunicorn). Nginx proxies from port 80 to port 8000 automatically.
@@ -344,7 +340,6 @@ def complete_upload():
 - `redis`: Redis client
 - `boto3`: AWS SDK for Python
 - `python-dotenv`: Environment variable management
-- `itsdangerous`: Secure token signing
 - `pytest`: Testing framework
 - `requests`: HTTP library (for CLI)
 
