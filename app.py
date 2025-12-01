@@ -44,7 +44,6 @@ def redis_check():
         return err("redis_unreachable", str(e), 500)
 
 # --- Auth Routes ---
-# --- Auth Routes ---
 
 @app.post("/api/v1/register")
 def register():
