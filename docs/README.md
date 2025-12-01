@@ -84,7 +84,7 @@ All API endpoints are prefixed with `/api/v1/`. Authentication is handled via th
 
 ---
 
-## LI Usage
+## CLI Usage
 
 The project includes a CLI tool (`cli.py`) for interacting with the service from the terminal.
 
