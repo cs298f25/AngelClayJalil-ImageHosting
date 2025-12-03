@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 ImageHost CLI
+- Enforces strict file validation (No PDFs, Text, etc)
+- Auto-converts HEIC -> JPEG
+- Prints Upload URL on success
 """
 
 import argparse
@@ -126,7 +129,7 @@ def cmd_upload(args):
         print(f"[error] File not found: {original_path}")
         sys.exit(1)
 
-    # This will now EXIT if the file is invalid
+    # Validate/Convert
     upload_path, mime_type, needs_cleanup = process_file(original_path)
     
     # Use original name but ensure correct extension
@@ -148,11 +151,18 @@ def cmd_upload(args):
         if needs_cleanup: os.unlink(upload_path)
         sys.exit(1)
 
-    api_request("POST", "/api/v1/upload/complete", json_body={
+    # --- THE FIX: Capture the response variable here ---
+    response = api_request("POST", "/api/v1/upload/complete", json_body={
         "iid": req["iid"], "key": req["key"], "filename": filename, "mime_type": mime_type
     }, use_auth=True)
     
+    # --- Print the URL ---
     print("[ok] Upload complete!")
+    if "url" in response:
+        print(f"URL: {response['url']}")
+    else:
+        print(json.dumps(response, indent=2))
+
     if needs_cleanup: os.unlink(upload_path)
 
 def main():
