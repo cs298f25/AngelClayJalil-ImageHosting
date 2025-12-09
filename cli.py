@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 import requests
 
-# --- STRICT IMPORT CHECK ---
+# --- Import Check ---
 try:
     from PIL import Image
     import pillow_heif
@@ -151,7 +151,7 @@ def cmd_upload(args):
         if needs_cleanup: os.unlink(upload_path)
         sys.exit(1)
 
-    # --- THE FIX: Capture the response variable here ---
+    # --- Capture the response variable here ---
     response = api_request("POST", "/api/v1/upload/complete", json_body={
         "iid": req["iid"], "key": req["key"], "filename": filename, "mime_type": mime_type
     }, use_auth=True)

@@ -13,7 +13,6 @@ try:
 except ImportError:
     Image = None
 
-# --- FIXTURES ---
 
 @pytest.fixture
 def temp_image(tmp_path):

@@ -8,24 +8,18 @@ import os
 import re
 import unicodedata
 import time
-
-# These are our infrastructure-level clients (Redis + S3)
-# They handle the how of storage. Services decide the when/why.
 from infrastructure.redis_client import RedisClient
 from infrastructure.s3_client import S3Client
 
 redis_client = RedisClient()
 s3_client = S3Client()
-# Just a tiny helper to get timestamps in seconds
+
+# Helper to get timestamps in seconds
 def now():
     return int(time.time())
 
 
 class Utils:
-    """
-    Just a small toolbox class.
-    Mostly used so we can clean filenames before uploading to S3.
-    """
 
     @staticmethod
     def sanitize_filename(filename: str, max_len: int = 120) -> str:
@@ -56,7 +50,7 @@ class Utils:
 
 from werkzeug.security import generate_password_hash, check_password_hash
 
-# ... existing imports ...
+
 
 class AuthService:
     @staticmethod

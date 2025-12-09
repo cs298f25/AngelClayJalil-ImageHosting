@@ -34,7 +34,6 @@ class S3Client:
         print(f"[S3Client] Using bucket={self.bucket_name} region={self.region}")
 
     # URL helpers
-    # -----------------------
     def get_s3_url(self, key: str) -> str:
         """S3-style path, mostly useful for debugging / logging."""
         return f"s3://{self.bucket_name}/{key}"
@@ -48,7 +47,6 @@ class S3Client:
         return f"https://{self.bucket_name}.s3.amazonaws.com/{safe_key}"
 
     # Presigned URLs
-    # -----------------------
     def generate_presigned_upload_url(self, key: str, mime_type: str, expires_in: int = 3600) -> str:
         """
         Create a temporary upload link so the client can send the file
@@ -85,7 +83,6 @@ class S3Client:
             raise Exception(f"S3 Error (download): {e}") from e
 
     # Deleting files
-    # -----------------------
     def delete_object(self, key: str) -> None:
         """Delete a file from S3. We use this when a user deletes an image."""
         try:

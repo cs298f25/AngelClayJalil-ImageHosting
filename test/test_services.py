@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import services
 from services import AuthService, ImageService, Utils
 
-# We set a dummy bucket name so the S3Client doesn't crash on init
+# Set a dummy bucket name so the S3Client doesn't crash on init
 os.environ.setdefault("AWS_S3_BUCKET_NAME", "test-bucket")
 
 # --- MOCKS ---
@@ -14,7 +14,7 @@ class DummyRedis:
         self.user_images = {}
         self.deleted = []
         
-        # NEW: Mock the raw redis connection object (_r)
+        # Mock the raw redis connection object (_r)
         self._r = MagicMock()
         # Make the pipeline return a mock that we can assert on
         self.pipeline_mock = MagicMock()

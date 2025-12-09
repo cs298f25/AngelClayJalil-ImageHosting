@@ -21,7 +21,7 @@ class RedisClient:
  
     # Internal key helpers
     
-    # ---------------------------
+
     @staticmethod
     def _k_user(uid: str) -> str:
         return f"user:{uid}"
@@ -36,7 +36,6 @@ class RedisClient:
 
     
     # User Operations
-    # ---------------------------
     def create_user(self, uid: str, username: str, created_at: float) -> None:
         """
         Creates a user record in Redis. There's no "tables" so we just stuff it
@@ -53,7 +52,6 @@ class RedisClient:
 
    
     # Image Operations
-    # ---------------------------
     def store_image(
         self,
         iid: str,

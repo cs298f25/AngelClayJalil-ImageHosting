@@ -59,8 +59,7 @@ def test_s3_init_connects_boto(mock_boto):
     os.environ["AWS_REGION"] = "us-west-2"
     
     S3Client()
-    
-    # FIX: Use ANY instead of pytest.any
+  
     mock_boto.assert_called_with(
         "s3", 
         region_name="us-west-2", 
